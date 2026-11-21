@@ -57,3 +57,14 @@ Reading: GDSCR bits 27:24 left 0 (state 8) but PWR_ON (bit 31) never came. DT `g
 So the root clock was not the missing piece. DT: the GX GDSC parent supply is `gfx_corner` (CPR4 `qcom,cpr4-sdm660-mmss-ldo-regulator`), whose
 `vdd-supply` is a *stub* regulator and whose `vdd-thread0-ldo-supply` is `msm_gfx_ldo` (`qcom,sdm660-gfx-ldo`, `0x0506e000`, 0x34 bytes). On this
 SoC the GX rail goes through that LDO / head-switch block, which the GDSC drives via `PWRSWITCH_CTRL (+0x1c)`. Next: read it (0238), then BHS mode.
+
+## Run 5 - lavgpu=4 with 0238 (LDO dump + BHS), 2026-11-21
+
+    gfx ldo: atest/cfg0/cfg1/cfg2/ld/vreftest/vref all 0; pwrswitch_ctrl 80000038 (CLAMP_IO, PDN, UNDER_SW_CTRL set; PWR_SRC_SEL 0 = BHS);
+             status1 0000000d; pwrswitch_status 0
+    after the BHS sequence: identical (the bits were already in BHS state)
+    GX GDSC now 08222000 (STILL OFF); collapsed again; boot reached the lock screen path normally
+
+The BHS write sequence is a no-op here. Remaining difference with the vendor gdsc driver (gdsc-regulator.c, gdsc_enable): before clearing
+SW_COLLAPSE it pulses the GX BCR (GPUCC+0x1090 bit 0), pulses GMEM_RESET (GPUCC+0x130 bit 4) and clears the clamp (GPUCC+0x130 bit 0).
+We cleared the clamp only after a power-up that never happened (the clamp was still 1). 0239 does the three steps first.
