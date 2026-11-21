@@ -22,7 +22,7 @@ Each milestone is testable on its own and ends with a number or a log line, not 
   (`IS_SUPPORTED` pas-id 13); are the GX GDSC and the bootloader's rail state enough to read the GPU block; does the
   kgsl SMMU need a TrustZone/secure setup before our context bank is usable.
 
-## M1 - Power and identify
+## M1 - Power and identify (patch 0236 written 2026-11-21, pending device test)
 
 - XNU driver `lavender.gpu` (boot-arg gated, off by default): enable GPU clocks and rails, map the register block,
   read the chip id / CP version / RBBM status. Read-only first.
