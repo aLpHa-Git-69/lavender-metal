@@ -1942,14 +1942,12 @@ draw_mark(const char *what)
 	for (int k = 0; k < 40; k++) {
 		flush_dcache64((addr64_t)(fence_pa + 0x80), 64, TRUE);
 		if (*m == want) {
-			printf("LAVGPU: mark %s ok
-", what);
+			printf("LAVGPU: mark %s ok\n", what);
 			return 0;
 		}
 		lav_wait(5);
 	}
-	printf("LAVGPU: the ME is stuck BEFORE mark %s (fence %08x)
-", what, *m);
+	printf("LAVGPU: the ME is stuck BEFORE mark %s (fence %08x)\n", what, *m);
 	return -1;
 }
 
@@ -2014,8 +2012,12 @@ step21_draw(void)
 
 	lav_announce("step 21: submit the first 3D draw");
 	/* fd5_emit_restore (the non-default part) */
-	ring_pkt7(CP_SET_RENDER_MODE, 1);
+	ring_pkt7(CP_SET_RENDER_MODE, 5);
 	ring_put(1);						/* BYPASS */
+	ring_put(0);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0);
 	if (draw_mark("bypass")) {
 		return;
 	}
