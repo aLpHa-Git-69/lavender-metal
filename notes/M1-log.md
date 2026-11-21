@@ -149,3 +149,9 @@ SP_A2D_OUTPUT_INFO, CP_SET_RENDER_MODE BLIT2D / END2D, CP_BLIT op SCALE) copies 
 was consumed by the CP but copied nothing: the 2D core writes through the CCU colour cache, so the blit needs
 CP_EVENT_WRITE PC_CCU_FLUSH_COLOR_TS (0x1d) before the data reaches memory (0311), as the SP store needed the UCHE
 flush. Values: blit cntl 0x86000000 (ROP_COPY, UNORM8, bit 31), R8_UNORM = 3, pitch fields are bytes >> 6.
+
+## M4.1: RGBA8 rectangle copy (2026-11-21)
+lavgpu=19: the 2D core copies a 16x8 box from (4,2) of a 32x16 RGBA8 linear image to (8,4) of another: 128 of 128
+pixels right and the other 384 destination pixels untouched. Pitch 128 (>> 6 = 2), array pitch = image bytes >> 6,
+RB5_R8G8B8A8_UNORM = 0x30, blit cntl unchanged (0x86000000), CP_BLIT x/y fields are inclusive corners. Same flushes as
+M4.0 (CCU colour flush then UCHE flush).
