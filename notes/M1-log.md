@@ -135,3 +135,10 @@ Earlier runs with the same shader hung the whole SoC (3 of 4): cause not isolate
 working builds: SP_CS_CTRL_REG0 footprint 2 (shader uses r0..r3), then 4; the SMMU register prints/SMR0 write added
 in 0307 (SMR0 mask bits are not writable). If the hang comes back, suspect timing or the register footprint.
 Recovery after a failed dispatch is not always possible (re-ME_INIT sometimes not consumed after the reset).
+
+## M3 done: 64 threads (2026-11-21)
+lavgpu=17: one workgroup of 64 threads (HLSQ_CS_NDRANGE_0 local size 63 << 2 | dim 3, GLOBALSIZE_X 64, register
+footprint 6). HLSQ_CS_CNTL_0 LOCALIDREGID = 16 delivers the local id in r4.x (r4.x..z), verified by the probe dispatch
+(out[r4.x] = const wrote all 64 words). Then out[tid] = in[tid] + 0x11111111 twice: 64 of 64 outputs equal the
+host-computed value each time. Encodings: stg.a.u32 hi 0xc0d60100|(A<<9)|IDX low 0x01800000|(D<<1);
+ldg.a.u32 hi 0xc0060000|D low 0x01c00000|(A<<14)|(IDX<<1)|1 (index scaled by 4 implicitly).
