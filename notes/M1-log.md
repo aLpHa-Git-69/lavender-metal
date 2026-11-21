@@ -22,3 +22,16 @@ Boot unaffected. Next: lavgpu=3 (BIMC votes + CX GDSC).
 Reading: GCC votes and the CX power domain work from XNU with plain register writes; no hang, no reset.
 Next: lavgpu=4 (GX GDSC, clamp release, gfx3d/rbbmtimer branches, first read of the GPU block at 0x05000000).
 This is the first step that depends on the GX rail the bootloader left.
+
+## Run 3 - lavgpu=4 (first GX attempt), 2026-11-21
+
+    CX GDSC on again (a0222000).
+    GX GDSC off (00222001), clearing SW_COLLAPSE
+    GX GDSC now 08222000 (STILL OFF) after 1 s; ladder stopped; boot continued normally
+
+Reading: GDSCR bits 27:24 left 0 (state 8) but PWR_ON (bit 31) never came. DT `gdsc_gpu_gx`: `qcom,force-enable-root-clk`,
+`core_root_clk = <gpucc 0xc>` (the GFX3D RCG, still ROOT_OFF: rcg cmd 80000000), `qcom,reset-aon-logic`,
+`parent-supply` = `gfx_corner` (CPR4 regulator, `/soc/cpr4-ctrl@05061000`). Plausible causes, in order:
+1. root clock not running (fix in 0237: set ROOT_EN on the RCG, XO source, before toggling the GDSC);
+2. the GX rail (`gfx_corner` / CPR4 + PMIC) is off: needs an RPM/CPR vote the port cannot make yet.
+0237 also collapses GX again on failure and prints GDSCR and 0x1098 after 1 more s.
