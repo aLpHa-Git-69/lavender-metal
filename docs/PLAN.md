@@ -44,7 +44,7 @@ Each milestone is testable on its own and ends with a number or a log line, not 
 
 ## M4 - Render and Metal
 
-- M4.0 DONE 2026-11-21: 2D blit (CP_BLIT) copies a buffer on the device. M4.1 DONE 2026-11-21: RGBA8 rectangle copy, pixel exact. M4.3 DONE 2026-11-21: first sysmem 3D draw (TRILIST, hand-assembled VS/FS, 64x64 RGBA8 linear target), 351/351 pixels correct; key bug was RB_MRT_PITCH/ARRAY_PITCH being shr 6. 2D solid fill parked. Next: textures, blending, depth, then the MTLDevice/IOKit plug-in.
+- M4.0 DONE 2026-11-21: 2D blit (CP_BLIT) copies a buffer on the device. M4.1 DONE 2026-11-21: RGBA8 rectangle copy, pixel exact. M4.3 DONE 2026-11-21: first sysmem 3D draw (TRILIST, hand-assembled VS/FS, 64x64 RGBA8 linear target), 351/351 pixels correct; key bug was RB_MRT_PITCH/ARRAY_PITCH being shr 6. 2D solid fill parked. M4.4 DONE 2026-11-21: the FS samples a 4x4 RGBA8 linear texture (cat5 sam, nearest, clamp to edge) and the right texel lands in the target. Next: interpolated texture coordinates (varyings), blending, depth, then the MTLDevice/IOKit plug-in.
 - `MTLDevice` plug-in and the IOKit service the plug-in talks to; `MTLCreateSystemDefaultDevice()` returns a device.
 - CoreAnimation over Metal; PosterBoard preview and Astronomy as acceptance tests.
 - Done when: the idle lock screen costs a fraction of today's CPU and Astronomy renders.
