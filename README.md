@@ -53,16 +53,17 @@ verified (on the device unless noted).
 - ~~Secure mode off, CP-written fence read back by the CPU~~
 - ~~Deliberate hang recovered with a GPU reset, no reboot~~
 
-**M3 - A5xx register layer and compute** (in progress)
+**M3 - A5xx register layer and compute** (done 2026-11-21)
 
 - ~~`a5xx` register and PM4 packet layer, checked against Mesa's `a5xx.xml`~~
 - ~~Fake CP / GPU interpreter and host tests~~
 - ~~First compute dispatch on the device (hand-assembled shader wrote `0xc0de0001`)~~
-- [ ] Compute kernel from the fd5 sequence whose output matches a host reference run
-- [ ] Compute path wired into the boot-arg driver as a repeatable self-test
+- ~~Buffers in and out (`out = in + 0x11111111`)~~
+- ~~64-thread workgroup: 64 of 64 outputs equal the host reference~~
 
 **M4 - Render and Metal**
 
+- [ ] 2D blit through the A5xx 2D core (in progress, not yet verified)
 - [ ] One sysmem draw (fd5 sequence)
 - [ ] Textures, blending, depth
 - [ ] `MTLDevice` plug-in and the IOKit service behind it
