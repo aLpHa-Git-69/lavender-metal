@@ -46,3 +46,14 @@ Reading: GDSCR bits 27:24 left 0 (state 8) but PWR_ON (bit 31) never came. DT `g
 
 - lavgpu=3 (kernel 0237): fine, PosterBoard at 134.7 s. So BIMC votes and the CX GDSC are harmless; the stall of run 3 came from step 4
   (GX GDSC left with SW_COLLAPSE cleared and the power-up never completing, GDSCR 08222000). 0237 forces the RCG root first and collapses GX again on failure.
+
+## Run 4 - lavgpu=4 with 0237 (root clock first), 2026-11-21
+
+    gfx3d rcg cmd 80000000 -> 00000002 (root on)
+    GX GDSC off (00222001), clearing SW_COLLAPSE
+    GX GDSC now 08222000 (STILL OFF) after 3 s; after 1 more s the same, cfg(0x1098) 80008620 (POWER_UP_COMPLETE bit 16 = 0)
+    GX collapsed again: gdscr 08222001 rcg 80000000; boot reached PosterBoard at 134.8 s (no stall: the clean collapse fixed it)
+
+So the root clock was not the missing piece. DT: the GX GDSC parent supply is `gfx_corner` (CPR4 `qcom,cpr4-sdm660-mmss-ldo-regulator`), whose
+`vdd-supply` is a *stub* regulator and whose `vdd-thread0-ldo-supply` is `msm_gfx_ldo` (`qcom,sdm660-gfx-ldo`, `0x0506e000`, 0x34 bytes). On this
+SoC the GX rail goes through that LDO / head-switch block, which the GDSC drives via `PWRSWITCH_CTRL (+0x1c)`. Next: read it (0238), then BHS mode.
