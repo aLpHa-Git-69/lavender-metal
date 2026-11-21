@@ -126,3 +126,12 @@ in the DT; we give TZ a physically contiguous, non-secure buffer (MEM_SETUP with
 lavgpu=13 (0300) was consumed by the CP (86 dwords) but the store did not land. 0301 added a UCHE flush
 (UCHE_INVALIDATE 0x12) and CP_EVENT_WRITE CACHE_FLUSH_TS after the dispatch: the hand-assembled ir3 shader
 (mov imm, stg, end) then wrote 0xc0de0001 to memory. Lesson: the SP store sits in the write-back UCHE until flushed.
+
+## M3: buffers in and out (2026-11-21)
+lavgpu=15 ran 7 of 7 dispatches correctly: the step 13 constant store, the copy of a CPU-written word x3
+(0x00abcdef) and out = in + 0x11111111 x3 (0x11bcdf00). ldg, add.s, stg and (sy) encodings come from the Mesa ir3
+disasm vectors; mov-immediate/ldg/stg/add.s layouts are in kernel/lavender_gpu.c step13_compute.
+Earlier runs with the same shader hung the whole SoC (3 of 4): cause not isolated. Differences between the hanging and
+working builds: SP_CS_CTRL_REG0 footprint 2 (shader uses r0..r3), then 4; the SMMU register prints/SMR0 write added
+in 0307 (SMR0 mask bits are not writable). If the hang comes back, suspect timing or the register footprint.
+Recovery after a failed dispatch is not always possible (re-ME_INIT sometimes not consumed after the reset).

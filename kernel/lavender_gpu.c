@@ -1223,15 +1223,20 @@ shader_mov(uint32_t *p, uint32_t reg, uint32_t imm)
 }
 
 static void
-step13_compute(void)
+step13_compute(int mode)
 {
 	static const uint32_t addr_mode_regs[] = {
 		0x0bc1u, 0x0c81u, 0x0cc5u, 0x0d01u, 0x0e05u, 0x0e41u, 0x0e61u,
 		0x0e80u, 0x0ec1u, 0x0f01u,
 	};
 	vm_offset_t sh_va = 0;
-	uint64_t sh_pa = 0, out_pa = fence_pa + 0x40;
-	volatile uint32_t *out = (volatile uint32_t *)(rptr_va + 0x140);
+	vm_offset_t cb = smmu_va + 0x4000u + SMMU_CB * 0x1000u;	/* GPU context bank 4 */
+	uint64_t sh_pa = 0, out_pa = mode ? rptr_pa + 0x240 : fence_pa + 0x40;
+	/* mode 2 loads the word the step 13 shader stored (written by the GPU), not a CPU written one */
+	uint64_t in_pa = mode == 3 ? fence_pa + 0x40 : rptr_pa + 0x200;
+	uint32_t want = mode == 3 ? SHADER_OUT_VALUE : mode == 2 ? 0x00abcdefu : mode ? 0x11bcdf00u : SHADER_OUT_VALUE;
+	volatile uint32_t *out = (volatile uint32_t *)(rptr_va + (mode ? 0x240 : 0x140));
+	volatile uint32_t *in = (volatile uint32_t *)(rptr_va + (mode == 3 ? 0x140 : 0x200));
 	uint32_t *sh;
 
 	if (ring_va == 0 || ring_pa == 0) {
@@ -1256,13 +1261,50 @@ step13_compute(void)
 	sh[13] = 0x00000500u;					/* (rpt5)nop */
 	sh[14] = 0;
 	sh[15] = 0x03000000u;					/* end */
+	if (mode) {
+		/* out = in + 0x11111111: ldg, add.s, stg; encodings from Mesa's ir3 disasm vectors */
+		memset(sh, 0, 0x100);
+		shader_mov(&sh[0], 0, (uint32_t)in_pa);			/* r0.x */
+		shader_mov(&sh[2], 1, (uint32_t)(in_pa >> 32));		/* r0.y */
+		shader_mov(&sh[4], 8, (uint32_t)out_pa);		/* r2.x */
+		shader_mov(&sh[6], 9, (uint32_t)(out_pa >> 32));	/* r2.y */
+		shader_mov(&sh[8], 12, 0x11111111u);			/* r3.x */
+		sh[11] = 0x00000500u;					/* (rpt5)nop */
+		sh[12] = 0x01800001u;					/* ldg.u32 r1.x, g[r0.x], 1 */
+		sh[13] = 0xc0060004u;
+		sh[15] = 0x00000500u;
+		sh[16] = 0x000c0004u;					/* (sy)add.s r1.x, r1.x, r3.x */
+		sh[17] = 0x52380804u;
+		sh[19] = 0x00000500u;
+		sh[20] = 0x01800008u;					/* stg.u32 g[r2.x], r1.x, 1 */
+		sh[21] = 0xc0c61100u;
+		sh[23] = 0x00000500u;
+		sh[25] = 0x03000000u;					/* end */
+		if (mode >= 2) {
+			/* copy only: drop the add, the store waits for the load with (sy) */
+			sh[16] = 0;
+			sh[17] = 0x00000500u;
+			sh[21] = 0xd0c61100u;
+		}
+		if (mode != 3) {
+			*in = 0x00abcdefu;
+			flush_dcache64((addr64_t)(in_pa & ~63ull), 64, TRUE);
+		}
+	}
 	flush_dcache64((addr64_t)sh_pa, 0x1000, TRUE);
 	printf("LAVGPU: shader pa %llx, output pa %llx\n",
 	    (unsigned long long)sh_pa, (unsigned long long)out_pa);
-	for (int i = 0; i < 16; i += 2) {
+	for (int i = 0; i < 32; i += 2) {
 		printf("LAVGPU: shader dwords %08x %08x\n", sh[i], sh[i + 1]);
 	}
 
+	if (mode) {
+		/* the SP/UCHE loads may come from other stream ids than the CP: match every id to CB4 */
+		printf("LAVGPU: SMMU before: GFSR %08x CB4 FSR %08x SMR0 %08x\n", rd(smmu_va, 0x48),
+		    rd(cb, CB_FSR), rd(smmu_va, 0x800));
+		wr(smmu_va, 0x800, (1u << 31) | (0x7fffu << 16));
+		printf("LAVGPU: SMR0 now %08x\n", rd(smmu_va, 0x800));
+	}
 	lav_announce("step 13: WRITE the 64-bit address-mode and UCHE registers");
 	for (unsigned i = 0; i < sizeof(addr_mode_regs) / sizeof(addr_mode_regs[0]); i++) {
 		wr(gpu, addr_mode_regs[i] * 4, 1);
@@ -1278,7 +1320,7 @@ step13_compute(void)
 	wr(gpu, 0x0e8du * 4 + 4, 0);
 	wr(gpu, 0x0e81u * 4, 1u << 29);				/* UCHE_MODE_CNTL */
 
-	*out = 0;
+	*out = mode ? 0xdeadbeefu : 0;				/* a store of 0 must not look like no store */
 	flush_dcache64((addr64_t)(out_pa & ~63ull), 64, TRUE);
 
 	lav_announce("step 13: submit the compute dispatch");
@@ -1302,7 +1344,7 @@ step13_compute(void)
 	/* cs_program_emit with instrlen = 1 */
 	ring_reg(R_SP_SP_CNTL, 0);
 	ring_reg(R_HLSQ_CONTROL_0, 0x880);			/* TWO_QUADS | 0x880 */
-	ring_reg(R_SP_CS_CTRL_REG0, (2u << 10) | (1u << 2) | 0x2);	/* 2 full regs, BUFFER */
+	ring_reg(R_SP_CS_CTRL_REG0, ((mode ? 4u : 2u) << 10) | (1u << 2) | 0x2);	/* r0..r3 = 4 full regs for the buffer shaders, BUFFER */
 	ring_reg(R_HLSQ_CS_CONFIG, 1);
 	ring_reg(R_HLSQ_CS_CNTL, 1u << 1);			/* INSTRLEN 1 */
 	ring_reg(R_SP_CS_CONFIG, 1);
@@ -1365,7 +1407,7 @@ step13_compute(void)
 	for (int i = 0; i < 100; i++) {
 		lav_wait(5);
 		flush_dcache64((addr64_t)(out_pa & ~63ull), 64, TRUE);
-		if (*out == SHADER_OUT_VALUE) {
+		if (*out == want) {
 			printf("LAVGPU: SHADER WROTE IT: %08x after %d ms, RBBM_STATUS %08x\n",
 			    *out, i * 5, rd(gpu, A5_RBBM_STATUS));
 			return;
@@ -1378,6 +1420,9 @@ step13_compute(void)
 	flush_dcache64((addr64_t)((fence_pa + 0x80) & ~63ull), 64, TRUE);
 	printf("LAVGPU: cache flush event word %08x (expect 00001234 if the event ran)\n",
 	    *(volatile uint32_t *)(rptr_va + 0x180));
+	flush_dcache64((addr64_t)(in_pa & ~63ull), 64, TRUE);
+	printf("LAVGPU: input buffer now %08x\n", *in);
+	printf("LAVGPU: SMMU after: GFSR %08x CB4 FSR %08x\n", rd(smmu_va, 0x48), rd(cb, CB_FSR));
 recover:
 	lav_announce("step 13: RBBM software reset after the failed dispatch");
 	wr(gpu, A5_RBBM_SW_RESET_CMD, 1);
@@ -1453,7 +1498,19 @@ lavender_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 		step12_fence_reset();
 	}
 	if (step >= 13) {
-		step13_compute();
+		step13_compute(0);
+	}
+	if (step == 14 || step == 16) {
+		step13_compute(step == 14 ? 2 : 3);	/* 14: ldg+stg copy, 16: copy of a GPU-written word */
+	}
+	if (step == 15) {
+		/* 15: the copy three times (is it repeatable?), then ldg+add+stg three times */
+		for (int i = 0; i < 3; i++) {
+			step13_compute(2);
+		}
+		for (int i = 0; i < 3; i++) {
+			step13_compute(1);
+		}
 	}
 	printf("LAVGPU: ladder finished\n");
 }

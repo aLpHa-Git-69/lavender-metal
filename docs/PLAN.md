@@ -35,7 +35,7 @@ Each milestone is testable on its own and ends with a number or a log line, not 
 - A command stream that makes the CP write a value to memory (the fence), polled from the CPU.
 - Done when: a CP-written word is read back, repeatably, and a deliberate hang is recovered (reset) without a reboot.
 
-## M3 - A5xx register layer and compute - IN PROGRESS (first compute dispatch verified on device 2026-11-21: hand-assembled shader wrote 0xc0de0001; register layer, PM4 builder, fake CP and tests done 2026-11-21)
+## M3 - A5xx register layer and compute - IN PROGRESS (buffers in and out verified 7/7 on device 2026-11-21: ldg + add.s + stg; first compute dispatch verified on device 2026-11-21: hand-assembled shader wrote 0xc0de0001; register layer, PM4 builder, fake CP and tests done 2026-11-21)
 
 - `a5xx` register/packet layer generated from Mesa's `a5xx.xml` and checked against it (as hakios checks a6xx).
 - Fake GPU (interpreter) for host tests so most work does not need a flash.
