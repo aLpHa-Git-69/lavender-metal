@@ -1,0 +1,6 @@
+# reference trees and device firmware are never committed
+refs/
+firmware/
+*.raw
+*.img
+*.bin
