@@ -43,3 +43,6 @@ Reading: GDSCR bits 27:24 left 0 (state 8) but PWR_ON (bit 31) never came. DT `g
 - Control, shim 0235 (no GPU code), same userdata: swaps keep going, PosterBoard at 129.6 s. So the stall comes from the GPU ladder, not from userdata.
 - lavgpu=1 (read only): fine (earlier). lavgpu=2 (BIMC votes, kernel 0237): fine, PosterBoard at 134 s.
 - lavgpu=3 (earlier, 0236): log stops at 96 s (probably reset by hand). To retest with kernel 0237.
+
+- lavgpu=3 (kernel 0237): fine, PosterBoard at 134.7 s. So BIMC votes and the CX GDSC are harmless; the stall of run 3 came from step 4
+  (GX GDSC left with SW_COLLAPSE cleared and the power-up never completing, GDSCR 08222000). 0237 forces the RCG root first and collapses GX again on failure.
