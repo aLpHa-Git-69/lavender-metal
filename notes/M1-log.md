@@ -68,3 +68,19 @@ SoC the GX rail goes through that LDO / head-switch block, which the GDSC drives
 The BHS write sequence is a no-op here. Remaining difference with the vendor gdsc driver (gdsc-regulator.c, gdsc_enable): before clearing
 SW_COLLAPSE it pulses the GX BCR (GPUCC+0x1090 bit 0), pulses GMEM_RESET (GPUCC+0x130 bit 4) and clears the clamp (GPUCC+0x130 bit 0).
 We cleared the clamp only after a power-up that never happened (the clamp was still 1). 0239 does the three steps first.
+
+## Run 6 - lavgpu=4 with 0239: THE GPU BLOCK ANSWERED, 2026-11-21 (M1 done)
+
+    LAVGPU: GX bcr 00000000 clamp/domain 00000001   (before)  ->  GX bcr 00000000 clamp/domain 00000000
+    LAVGPU: GX GDSC off (00222001), clearing SW_COLLAPSE
+    LAVGPU: GX GDSC now a0222000 (on)               <- 11 ms
+    LAVGPU: GMEM clamp before 003c0000, clearing bit 0
+    LAVGPU: gfx3d clk 20008621 (on)  rbbmtimer clk 00000001 (on)
+    LAVGPU: RBBM_STATUS 00000001 STATUS3 00000000 INT_0 00000000 AHB_ERR 00000000
+    LAVGPU: SECVID_TRUST_CNTL 00000001 CLOCK_CNTL 00000000 SW_RESET 00000000 CP_RB_BASE 00000000 CP_RB_CNTL 00000000
+    LAVGPU: step 4 done, the GPU block answered
+
+What made the difference: the vendor order before SW_COLLAPSE: release the GMEM clamp (GPUCC+0x130 bit 0) (and the BCR / GMEM_RESET pulses). The LDO/BHS
+sequence of 0238 was a no-op here and the forced root clock of 0237 was not what blocked it.
+Reading: no hang, no AHB error, the block decodes registers (bus access fine, rails sufficient at the bootloader's corner and XO clock).
+SECVID_TRUST_CNTL = 1: the secure-mode switch the zap shader must clear. Nothing else is configured yet (ring base 0, clock cntl 0).
