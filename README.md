@@ -37,6 +37,13 @@ See [`docs/PLAN.md`](docs/PLAN.md). Short version:
 4. **M3** A5xx register layer + compute, checked against a fake GPU.
 5. **M4** Render, `MTLDevice`, CoreAnimation over Metal.
 
+## Related repositories
+
+- [pcorezzola/lavender-ios16](https://github.com/pcorezzola/lavender-ios16): the iOS 16 port for the Redmi Note 7 that 
+  this GPU work serves. The kernel driver (`kernel/lavender_gpu.c` here) is built into that port as `drivers/gpu/lavender_gpu.c` 
+  and the patches `xnu/patches/0300`-`0399`, and is switched on with the `lavgpu=N` boot-arg. Boot images and CI live there.
+- this repository: research, host-side tests and the plan; no firmware or Qualcomm blobs are committed.
+
 ## Layout
 
 ```
