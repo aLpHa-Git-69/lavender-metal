@@ -44,7 +44,7 @@ Each milestone is testable on its own and ends with a number or a log line, not 
 
 ## M4 - Render and Metal
 
-- One sysmem draw (fd5 sequence), then textures, blending, depth.
+- M4.0 DONE 2026-11-21: 2D blit (CP_BLIT) copies a buffer on the device. Next: solid fill (BLIT_OP_FILL), a 2D copy of a real RGBA8 image, then one sysmem draw (fd5 sequence), then textures, blending, depth.
 - `MTLDevice` plug-in and the IOKit service the plug-in talks to; `MTLCreateSystemDefaultDevice()` returns a device.
 - CoreAnimation over Metal; PosterBoard preview and Astronomy as acceptance tests.
 - Done when: the idle lock screen costs a fraction of today's CPU and Astronomy renders.

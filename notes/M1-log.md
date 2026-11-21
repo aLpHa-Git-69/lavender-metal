@@ -142,3 +142,10 @@ footprint 6). HLSQ_CS_CNTL_0 LOCALIDREGID = 16 delivers the local id in r4.x (r4
 (out[r4.x] = const wrote all 64 words). Then out[tid] = in[tid] + 0x11111111 twice: 64 of 64 outputs equal the
 host-computed value each time. Encodings: stg.a.u32 hi 0xc0d60100|(A<<9)|IDX low 0x01800000|(D<<1);
 ldg.a.u32 hi 0xc0060000|D low 0x01c00000|(A<<14)|(IDX<<1)|1 (index scaled by 4 implicitly).
+
+## M4.0: 2D blit (2026-11-21)
+lavgpu=18: a 64 byte R8 linear copy through the A5xx 2D core (RB_2D_SRC/DST_*, TPL1_A2D_SRC_TEXTURE_*,
+SP_A2D_OUTPUT_INFO, CP_SET_RENDER_MODE BLIT2D / END2D, CP_BLIT op SCALE) copies 64 of 64 bytes. The first run (0310)
+was consumed by the CP but copied nothing: the 2D core writes through the CCU colour cache, so the blit needs
+CP_EVENT_WRITE PC_CCU_FLUSH_COLOR_TS (0x1d) before the data reaches memory (0311), as the SP store needed the UCHE
+flush. Values: blit cntl 0x86000000 (ROP_COPY, UNORM8, bit 31), R8_UNORM = 3, pitch fields are bytes >> 6.
