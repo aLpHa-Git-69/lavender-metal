@@ -155,3 +155,9 @@ lavgpu=19: the 2D core copies a 16x8 box from (4,2) of a 32x16 RGBA8 linear imag
 pixels right and the other 384 destination pixels untouched. Pitch 128 (>> 6 = 2), array pitch = image bytes >> 6,
 RB5_R8G8B8A8_UNORM = 0x30, blit cntl unchanged (0x86000000), CP_BLIT x/y fields are inclusive corners. Same flushes as
 M4.0 (CCU colour flush then UCHE flush).
+
+## M4.2: 2D solid fill, parked (2026-11-21)
+lavgpu=20 tried CP_BLIT op FILL with RB_2D_SRC_SOLID_DW0..3 in three variants (control word 0x86000000 with integer
+components, control word 0, control word 0x86000000 with float components): the CP consumes the packets, no hang, but
+the destination stays untouched in all of them. Mesa's fd5 never uses a 2D fill, so there is no reference; the fill
+may need a source descriptor or a bit missing from a5xx.xml. Parked: clears can be done as a draw (RECTLIST) in M4.3.
