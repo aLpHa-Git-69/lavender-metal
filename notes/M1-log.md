@@ -35,3 +35,11 @@ Reading: GDSCR bits 27:24 left 0 (state 8) but PWR_ON (bit 31) never came. DT `g
 1. root clock not running (fix in 0237: set ROOT_EN on the RCG, XO source, before toggling the GDSC);
 2. the GX rail (`gfx_corner` / CPR4 + PMIC) is off: needs an RPM/CPR vote the port cannot make yet.
 0237 also collapses GX again on failure and prints GDSCR and 0x1098 after 1 more s.
+
+## Bisect of the stalled boot (userdata of 2026-11-21 08:3x, widgets work by another agent)
+
+- lavgpu=4 (0236): ladder ended at 53 s, SpringBoard blocked afterwards (CPU time frozen at 12.28 s for >5 min, compositor stopped at swap 3,
+  no PosterBoard). Photo: Apple logo with console text.
+- Control, shim 0235 (no GPU code), same userdata: swaps keep going, PosterBoard at 129.6 s. So the stall comes from the GPU ladder, not from userdata.
+- lavgpu=1 (read only): fine (earlier). lavgpu=2 (BIMC votes, kernel 0237): fine, PosterBoard at 134 s.
+- lavgpu=3 (earlier, 0236): log stops at 96 s (probably reset by hand). To retest with kernel 0237.
