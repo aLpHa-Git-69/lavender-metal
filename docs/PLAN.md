@@ -6,16 +6,21 @@ median ~13 fps), and whether wallpapers that need Metal (Astronomy) run.
 
 Each milestone is testable on its own and ends with a number or a log line, not a feeling.
 
-## M0 - Reconnaissance (no flashing)
+## M0 - Reconnaissance (no flashing) - DONE 2026-11-21
 
-- [ ] Extract the GPU firmware from the stock ROM (`vendor.img`, `NON-HLOS.bin`): CP/PFP microcode, GPMU, `a512_zap`.
-- [ ] Decode the DTB GPU node (`kgsl@5000000`): registers, IRQ, clocks, regulators, SMMU context banks, power levels.
-- [ ] Which firmware files the Linux/Mesa driver loads for a512, and the chip id it reports.
-- [ ] Does Mesa's `freedreno_devices.py` carry a512 (needed by the ir3 compiler path)?
-- [ ] Read how hakios splits `hakios.adreno.c` (bring-up) from `hakios.gpu.cpp` (IOKit service) and which parts are chip
-      independent (buffers, fences, SMMU page tables, submit).
-- [ ] What the port already provides: SMMU, clocks, regulators, SCM calls (zap needs a secure call).
-- Done when: `docs/HARDWARE-A512.md` lists every resource the GPU needs and where each one comes from.
+- [x] Extract the GPU firmware from the stock ROM (`vendor.img`): `firmware/` (11 files, SHA256SUMS).
+- [x] Decode the DTB GPU node: registers, IRQ, clocks, GDSCs, SMMU context banks, power levels, zap pas-id
+      (`docs/HARDWARE-A512.md`, `tools/dtb_dump.py`).
+- [x] Which firmware a512 loads: `a530_pm4.fw`, `a530_pfp.fw`, zap `a512_zap.mdt`; **no GPMU firmware**.
+- [x] Mesa knows the chip: `GPUId(512)`, 2 SP cores, `highest_bank_bit` 14 (ir3 and `fd5` need no chip port).
+- [x] hakios split: the IOKit service (`hakios.gpu.cpp`) is chip independent and talks to the chip driver through ~14 C
+      functions; only the chip driver (`hakios.adreno.c`) is rewritten (`docs/ARCHITECTURE.md`).
+- [x] What the port provides: SCM PAS code exists (`0113-topaz-modem-pas-boot`), direct GCC/GDSC register access works,
+      no SMMU and no RPM/CPR regulator handling yet.
+- Result: `docs/HARDWARE-A512.md` and `docs/ARCHITECTURE.md` list every resource and where each one comes from.
+- Carried into M1 as questions the hardware must answer: does SDM660 TrustZone take our SCM fast call
+  (`IS_SUPPORTED` pas-id 13); are the GX GDSC and the bootloader's rail state enough to read the GPU block; does the
+  kgsl SMMU need a TrustZone/secure setup before our context bank is usable.
 
 ## M1 - Power and identify
 

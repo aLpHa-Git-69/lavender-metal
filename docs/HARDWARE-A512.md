@@ -61,26 +61,47 @@ calls from the kernel (it can reach the SoC through PSCI at boot, but PAS init/a
 
 ## Firmware (extracted from the stock ROM `vendor.img`, `/firmware`)
 
-`tools/extract-gpu-fw.sh` puts these in `firmware/` (not committed, SHA256SUMS kept):
+`tools/extract-gpu-fw.sh` puts these in `firmware/` (not committed, SHA256SUMS kept).
 
-| File | Size | Role |
-| --- | --- | --- |
-| `a530_pm4.fw` | 19652 | CP micro-engine (PM4) microcode; Linux loads it for a512 too |
-| `a530_pfp.fw` | 17108 | prefetch parser microcode |
-| `a530v3_gpmu.fw2` | 8184 | GPMU (power management unit) firmware, v3 |
-| `a530_gpmu.fw2` | 8052 | GPMU, earlier version |
-| `a530v3_seq.fw2`, `a530v2_seq.fw2` | 2604 | GPMU sequencer data |
-| `a512_zap.mdt` + `.b00/.b01/.b02` (and `.elf`) | 6684 + 148 + 6536 + 4916 (17204) | secure-world zap shader (split PIL form) |
+**Which ones the Adreno 512 uses** (Linux `a5xx_catalog.c`, entry for chip id `0x05010200`; read as behavior reference):
 
-Which of the `a530*` files a512 really uses (pm4/pfp: the a530 pair; GPMU: the v3 one) must be confirmed against the
-Android kernel's table for chip `0x05010200` before M2. The `a508_zap.*` and `a540_gpmu.fw2` files also on the image are
-for other chips and are ignored.
+| Role | File | Size | Used by a512? |
+| --- | --- | --- | --- |
+| CP micro-engine (PM4) microcode | `a530_pm4.fw` | 19652 | **yes** |
+| Prefetch parser microcode | `a530_pfp.fw` | 17108 | **yes** |
+| Zap shader (secure world), split PIL form | `a512_zap.mdt` + `.b00/.b01/.b02` (`.elf` is the same image) | 6684 + 148 + 6536 + 4916 | **yes** (`zapfw = "a512_zap.mdt"`) |
+| GPMU firmware | `a530v3_gpmu.fw2`, `a530_gpmu.fw2` | 8184, 8052 | **no**: Linux gives GPMU firmware only to the 530; a512 has no `ADRENO_FW_GPMU` entry |
+| GPMU sequencer data | `a530v2_seq.fw2`, `a530v3_seq.fw2` | 2604 | no (same reason) |
+
+Other facts from that entry: GMEM = 256 KiB + 16 KiB (278528 bytes), `inactive_period` 250 ms ("avoids bouncing the GDSC which
+appears to make it grumpy"), quirk `LMLOADKILL_DISABLE` (matches the DT `gpu-quirk-lmloadkill-disable`). The a509 shares
+the a512 zap. `a508_zap.*` and `a540_gpmu.fw2` on the image belong to other chips.
+
+## What Mesa knows about the chip
+
+`src/freedreno/common/freedreno_devices.py` (Mesa `main`): `GPUId(512)` is grouped with 509 as `A5xxGPUInfo(num_sp_cores = 2,
+highest_bank_bit = 14, reg_size_vec4 = 96, wave_granularity = 1)`. So the ir3 compiler and the Gallium `fd5` driver
+already carry this chip: the shader compiler side needs no chip port, only the Metal front end that feeds it (hakios's).
+`highest_bank_bit = 14` matches the DT. The DT `qcom,chipid = 0x05010200` is the Linux catalog's id for revn 512.
 
 ## What the port already has / lacks (to verify in M0)
 
 Has (from lavender-ios16): eMMC/ADMA2, USB, touch, GIC, timers, SPMI keys, framebuffer through the MDP (display
 subsystem at `0x0c900000`), an empty `IOAcceleratorES`.
-To find out: whether the port enables clocks/regulators generically (GCC/RPM), whether it owns any SMMU, and whether
-SCM (SMC calls) from XNU works at all. The first M1 patch should be read-only: map `0x05000000` and read registers
-(`RBBM_*` chip/hw id) with the clocks left as the bootloader (ABL) leaves them, to learn whether the block is even
-powered.
+
+- **SCM / TrustZone:** `xnu/patches/0113-topaz-modem-pas-boot.patch` (`TopazModem.cpp`, from another Qualcomm phone of
+  the same lineage) already implements the SCM fast call (`smc #0`, `0x42000000 | svc<<8 | cmd`) and the PIL/PAS
+  sequence `IS_SUPPORTED -> INIT_IMAGE -> MEM_SETUP -> AUTH_RESET -> SHUTDOWN`. The zap shader is loaded by exactly that
+  sequence with pas-id 13. Not yet known: whether SDM660's TrustZone accepts this calling convention from our kernel
+  (PSCI over SMC works, SMP is up). First M1/M2 question, answered by `IS_SUPPORTED` for pas-id 13.
+- **Clocks and power:** the port programs the GCC/GDSC registers directly (`0x00100000`; the USB30 GDSC at `0xf004`).
+  The same style works for the GPU: GDSCs at `0x05066004` (CX) and `0x05066094` (GX) and the clock controller at
+  `0x05065000`. There is no clock framework to reuse.
+- **SMMU:** the port owns no SMMU (the DT declares no `iommus` for USB or eMMC, which run untranslated). The GPU's
+  kgsl SMMU (`0x05040000`, context bank `gfx3d_user`) has to be programmed by the GPU driver itself; hakios does the same
+  for its GPU (`space_*`, `smmu_context`).
+- **GX rail / CPR:** nothing in the port handles RPM regulators. The GX GDSC may be enough at the bootloader's default
+  corner (a low clock); raising the frequency needs the corner/rail vote, which on SDM660 goes through RPM. Open.
+
+The first M1 patch is read-only: map `0x05000000` and read the CP/RBBM identification registers, after switching the CX
+and GX GDSCs on and enabling the three bus clocks, to learn whether the block is reachable at all.
