@@ -2062,10 +2062,10 @@ step21_draw(void)
 	}
 	/* emit_sysmem_prep */
 	ring_pkt7(0x1du, 1);					/* CP_SKIP_IB2_ENABLE_GLOBAL */
+	ring_put(0);
 	if (draw_mark("skipib2")) {
 		return;
 	}
-	ring_put(0);
 	ring_pkt7(CP_EVENT_WRITE, 1);
 	ring_put(0x19);						/* PC_CCU_INVALIDATE_COLOR */
 	if (draw_mark("ccuinv")) {
