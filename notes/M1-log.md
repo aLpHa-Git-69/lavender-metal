@@ -111,3 +111,18 @@ in the DT; we give TZ a physically contiguous, non-secure buffer (MEM_SETUP with
 2. Zap: INIT_IMAGE (metadata = a512_zap.mdt in a contiguous buffer) -> MEM_SETUP -> copy b02 -> AUTH_AND_RESET; then read SECVID_TRUST_CNTL again.
 3. Read-only look at the kgsl SMMU (0x05040000): is it translating or in bypass? The CP microcode and ring are fetched through it.
 4. PM4/PFP into the CP, ring buffer, CP_ME_INIT, the fence (the M2 "done when").
+
+## M2 result (2026-11-21, lavgpu=6..12)
+- Zap via PIL PAS 13: INIT_IMAGE/MEM_SETUP/AUTH_AND_RESET ret 0. SMMU: bypass refused, CB4 stage 1 identity table (4x1GB blocks) + S2CR0=4 works; CB1..3 reads hang the reader.
+- Microcode/ring registers accepted; un-halt (CP_PFP_ME_CNTL 0x303 -> 0), ME_INIT, SET_SECURE_MODE(0): SECVID_TRUST_CNTL 1 -> 0.
+- Fence: 16 of 16 landed. Deliberate hang (short CP_NOP) leaves RPTR=WPTR but CP stuck; RBBM_SW_RESET_CMD 1/0 resets RPTR/WPTR to 0, halt back to 0x303, SECVID_TRUST_CNTL back to 1 -> re-run bring-up (zap stays loaded) and a fence lands again: RECOVERED.
+
+## M3 first slice (2026-11-21, host only)
+- tools/gen_a5xx.py: Mesa a5xx.xml + adreno_pm4.xml -> userland/include/lavender-metal/a5xx.hpp (1044 registers, bitfields, enums, PM4 opcodes).
+- userland/include/lavender-metal/pm4.hpp (type 7 packets with parity) and fake_cp.hpp (strict fake command processor: ME_INIT first, secure mode, MEM_WRITE, stuck CP, SW reset); userland/tests/cp_test.cpp replays the device sequences (RPTR 9/11/15, fence, hang + reset) and passes (`make test` in userland, run in the port-ios-build docker image).
+- Next: compute dispatch (fd5_compute.c sequence: CP_LOAD_STATE4 shader, SP_CS_*, CP_EXEC_CS) on the fake CP first, then a real kernel on the device compared with a host reference.
+
+## M3: first compute dispatch (2026-11-21)
+lavgpu=13 (0300) was consumed by the CP (86 dwords) but the store did not land. 0301 added a UCHE flush
+(UCHE_INVALIDATE 0x12) and CP_EVENT_WRITE CACHE_FLUSH_TS after the dispatch: the hand-assembled ir3 shader
+(mov imm, stg, end) then wrote 0xc0de0001 to memory. Lesson: the SP store sits in the write-back UCHE until flushed.

@@ -29,13 +29,13 @@ Each milestone is testable on its own and ends with a number or a log line, not 
 - Done when: the live log prints the Adreno chip id and revision from the real hardware, with no hang and no change to
   boot time.
 
-## M2 - Ring, microcode, fence
+## M2 - Ring, microcode, fence - DONE 2026-11-21 (patches 0241-0248: zap via SCM, SMMU stage 1 identity table, PM4/PFP, ring, ME_INIT, secure mode off, fence x16, hang + reset recovery)
 
 - Load PM4/PFP, set up the ring buffer in the GPU SMMU, load the zap shader through SCM, start the CP.
 - A command stream that makes the CP write a value to memory (the fence), polled from the CPU.
 - Done when: a CP-written word is read back, repeatably, and a deliberate hang is recovered (reset) without a reboot.
 
-## M3 - A5xx register layer and compute
+## M3 - A5xx register layer and compute - IN PROGRESS (first compute dispatch verified on device 2026-11-21: hand-assembled shader wrote 0xc0de0001; register layer, PM4 builder, fake CP and tests done 2026-11-21)
 
 - `a5xx` register/packet layer generated from Mesa's `a5xx.xml` and checked against it (as hakios checks a6xx).
 - Fake GPU (interpreter) for host tests so most work does not need a flash.
