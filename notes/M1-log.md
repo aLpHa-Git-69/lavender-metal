@@ -84,3 +84,30 @@ What made the difference: the vendor order before SW_COLLAPSE: release the GMEM 
 sequence of 0238 was a no-op here and the forced root clock of 0237 was not what blocked it.
 Reading: no hang, no AHB error, the block decodes registers (bus access fine, rails sufficient at the bootloader's corner and XO clock).
 SECVID_TRUST_CNTL = 1: the secure-mode switch the zap shader must clear. Nothing else is configured yet (ring base 0, clock cntl 0).
+
+## Run 7 - lavgpu=5 (SCM questions), 2026-11-21: TrustZone knows the GPU zap
+
+    SCM is_call_available(PIL IS_SUPPORTED): ret 0 res 1
+    SCM PAS id 13 (gpu zap)  supported: ret 0        res 0      <- accepted
+    SCM PAS id  4 (modem)    supported: ret ffffffff res 0      <- unsupported on SDM660 (modem goes through MBA, not PAS)
+    SCM PAS id 99 (unused)   supported: ret ffffffff res 0      <- unsupported
+    boot reached the lock screen normally with the GX left powered.
+
+Reading: our SMC64/SIP convention (as in 0113) works on the SDM660 TrustZone from EL1, and TZ tells the GPU zap (13) apart from ids it does not
+have. `ret 0` is "supported" (the `res` word is not informative on this TZ, same as the topaz modem).
+
+## What the zap image looks like (firmware/a512_zap.mdt, read on the host)
+
+    phdr0 type 0   off 0     filesz 0x94    flags 07000000   (ELF header + phdrs = a512_zap.b00, 148 bytes)
+    phdr1 type 0   off 0x1000 filesz 0x1988 flags 02200000   (hash/signature segment = a512_zap.b01, 6536 bytes)
+    phdr2 PT_LOAD  off 0x3000 pa 0x5000 filesz 0x1334 memsz 0x1334 flags 08000007 align 0x100000   (the code, a512_zap.b02, 4916 bytes)
+
+`a512_zap.mdt` = b00 + b01 (148 + 6536 = 6684), the PIL metadata for INIT_IMAGE. Flag bit 27 on the load segment = relocatable: no reserved region
+in the DT; we give TZ a physically contiguous, non-secure buffer (MEM_SETUP with its address and size), copy b02 into it, then AUTH_AND_RESET.
+
+## M2 plan from here
+
+1. Get the firmware files into the kernel: read them with vnode I/O from the iOS root (e.g. /usr/share/firmware/lavender/gpu/, put there over ssh); nothing is embedded.
+2. Zap: INIT_IMAGE (metadata = a512_zap.mdt in a contiguous buffer) -> MEM_SETUP -> copy b02 -> AUTH_AND_RESET; then read SECVID_TRUST_CNTL again.
+3. Read-only look at the kgsl SMMU (0x05040000): is it translating or in bypass? The CP microcode and ring are fetched through it.
+4. PM4/PFP into the CP, ring buffer, CP_ME_INIT, the fence (the M2 "done when").
