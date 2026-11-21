@@ -27,15 +27,48 @@ the architecture we follow, not code that runs on this GPU:
 
 The reference tree is kept (sparse, not committed) under `refs/hakios` at the commit recorded in `docs/REFERENCES.md`.
 
-## Plan
+## Roadmap
 
-See [`docs/PLAN.md`](docs/PLAN.md). Short version:
+Details and "done when" criteria per milestone are in [`docs/PLAN.md`](docs/PLAN.md). Struck-through items are done and
+verified (on the device unless noted).
 
-1. **M0** Reconnaissance: firmware from the stock ROM, GPU node of the DTB, what Mesa knows about the chip.
-2. **M1** Power the GPU from XNU and read its version.
-3. **M2** Ring buffer, microcode, zap shader, a CP-written fence.
-4. **M3** A5xx register layer + compute, checked against a fake GPU.
-5. **M4** Render, `MTLDevice`, CoreAnimation over Metal.
+**M0 - Reconnaissance** (done 2026-11-21)
+
+- ~~Extract the GPU firmware from the stock ROM~~
+- ~~Decode the GPU node of the DTB (registers, IRQ, clocks, GDSCs, SMMU, zap pas-id)~~
+- ~~Work out what Mesa and hakios already cover (chip id, ir3/fd5, chip-independent IOKit service)~~
+
+**M1 - Power and identify** (done 2026-11-21)
+
+- ~~`lavender.gpu` XNU driver behind the `lavgpu=N` boot-arg~~
+- ~~GPU clocks and GX rail up without hanging the SoC~~
+- ~~Read the GPU register block (chip id, CP version, RBBM status)~~
+- ~~TrustZone confirms PAS id 13~~
+
+**M2 - Ring, microcode, fence** (done 2026-11-21)
+
+- ~~Zap shader loaded through SCM~~
+- ~~GPU SMMU stage 1 identity table~~
+- ~~PM4/PFP microcode loaded, ring buffer set up, `ME_INIT`~~
+- ~~Secure mode off, CP-written fence read back by the CPU~~
+- ~~Deliberate hang recovered with a GPU reset, no reboot~~
+
+**M3 - A5xx register layer and compute** (in progress)
+
+- ~~`a5xx` register and PM4 packet layer, checked against Mesa's `a5xx.xml`~~
+- ~~Fake CP / GPU interpreter and host tests~~
+- ~~First compute dispatch on the device (hand-assembled shader wrote `0xc0de0001`)~~
+- [ ] Compute kernel from the fd5 sequence whose output matches a host reference run
+- [ ] Compute path wired into the boot-arg driver as a repeatable self-test
+
+**M4 - Render and Metal**
+
+- [ ] One sysmem draw (fd5 sequence)
+- [ ] Textures, blending, depth
+- [ ] `MTLDevice` plug-in and the IOKit service behind it
+- [ ] `MTLCreateSystemDefaultDevice()` returns a device
+- [ ] CoreAnimation over Metal (PosterBoard preview, Astronomy wallpaper)
+- [ ] Idle lock screen costs a fraction of today's `backboardd` CPU (now ~150-170 % of 400 %, ~13 fps)
 
 ## Related repositories
 
