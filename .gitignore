@@ -4,3 +4,4 @@ firmware/
 *.raw
 *.img
 *.bin
+userland/out/
