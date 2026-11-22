@@ -67,7 +67,7 @@ Three parts, as hakios splits them: (A) the shader compiler, AIR (`.metallib`) i
 | M5.5 | Present: a drawable the compositor can hand to the panel | yes | frames on screen |
 | M5.6 | CoreAnimation acceptance: PosterBoard preview, Astronomy | yes | the done-when below |
 
-The open decision is the compiler (part A): (1) our own small AIR-to-A5xx backend for just the shaders CoreAnimation uses (hakios's sweep: 39/39 vertex, 95/95 fragment functions of CoreAnimation compile through its front end; ours would be far smaller than a general one); (2) port Mesa's NIR/ir3 into a userland library (MIT, large, a build of its own, and our rule is that Mesa is a behaviour reference only); (3) reuse hakios's AIR front end plus Mesa's ir3 as a dependency. M5.1 and M5.2 do not depend on it.
+The open decision is the compiler (part A): (1) our own small AIR-to-A5xx backend for just the shaders CoreAnimation uses (hakios's sweep: 39/39 vertex, 95/95 fragment functions of CoreAnimation compile through its front end; ours would be far smaller than a general one); (2) port Mesa's NIR/ir3 into a userland library (MIT, so it can be reused with its notices kept as docs/REFERENCES.md says; large, and a build of its own; only GPL code such as Linux msm is reading-only); (3) reuse hakios's AIR front end plus Mesa's ir3 as a dependency. M5.1 and M5.2 do not depend on it.
 
 ## Risks (ordered)
 
