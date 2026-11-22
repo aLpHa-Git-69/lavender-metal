@@ -9,8 +9,13 @@
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <stdio.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
 
 enum { kLavMetal = 5 };
+
+static io_connect_t gConn;
 
 static kern_return_t
 metalProps(io_connect_t conn, uint32_t on)
@@ -18,8 +23,21 @@ metalProps(io_connect_t conn, uint32_t on)
 	return IOConnectCallStructMethod(conn, kLavMetal, &on, sizeof(on), NULL, NULL);
 }
 
+/* Metal aborts the process when a plug-in is not what it wants: take the properties away first */
+static void
+crashed(int sig)
+{
+	uint32_t off = 0;
+
+	if (gConn != 0) {
+		IOConnectCallStructMethod(gConn, kLavMetal, &off, sizeof(off), NULL, NULL);
+	}
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
 int
-main(void)
+main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	@autoreleasepool {
@@ -32,9 +50,20 @@ main(void)
 			return 1;
 		}
 		kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+		gConn = conn;
+		signal(SIGABRT, crashed);
+		signal(SIGSEGV, crashed);
+		signal(SIGTRAP, crashed);
+		signal(SIGILL, crashed);
 		printf("IOServiceOpen: kr %#x\n", kr);
 		if (kr != KERN_SUCCESS) {
 			return 1;
+		}
+
+		if (argc > 1 && strcmp(argv[1], "off") == 0) {
+			kr = metalProps(conn, 0);
+			printf("properties off: kr %#x\n", kr);
+			return kr == KERN_SUCCESS ? 0 : 1;
 		}
 
 		/* what Metal would find before the properties are there */

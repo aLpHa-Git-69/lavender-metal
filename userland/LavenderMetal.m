@@ -100,6 +100,16 @@ lavenderMetalLoad(void)
 		lavlog("LavenderMetalDevice could not be made (already there?)");
 		return;
 	}
+	/* Metal insists (MTLAddDevice: "newDevice conformsToProtocol:MTLDevice") that the device says it is one */
+	static const char * const protocols[] = { "MTLDevice", "MTLDeviceSPI" };
+	for (unsigned int i = 0; i < sizeof(protocols) / sizeof(protocols[0]); i++) {
+		Protocol * proto = objc_getProtocol(protocols[i]);
+		if (proto != NULL) {
+			class_addProtocol(cls, proto);
+		} else {
+			lavlog("the protocol %s is not known in this process", protocols[i]);
+		}
+	}
 	class_addMethod(cls, @selector(initWithAcceleratorPort:), (IMP)deviceInit, "@@:I");
 	class_addMethod(cls, @selector(name), (IMP)deviceName, "@@:");
 	class_addMethod(cls, @selector(registryID), (IMP)deviceRegistryID, "Q@:");

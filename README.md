@@ -75,7 +75,7 @@ verified (on the device unless noted).
 **M5 - The Metal device** (in progress)
 
 - ~~M5.0: the GPU as an IOKit service, `LavenderGPU`, with a user client (info, buffer new/free mapped into the client, submit of PM4 words, submit by reference). Verified on the device from the kernel (selftest) and from a userland program: the GPU writes into a mapped buffer and the program reads it back (patch 0319 in the port)~~
-- [ ] M5.1: a device that exists: the `MTLDevice` bundle and `MTLCreateSystemDefaultDevice()` returns it (behind a boot-arg)
+- ~~M5.1: a device that exists: the `LavenderMetal` bundle, and `MTLCreateSystemDefaultDevice()` returns it on the phone (the plug-in properties are put on `IOAcceleratorES` on demand by the service)~~
 - [ ] M5.2: buffers, textures, command queue, command buffer and blit encoder through Metal's objects
 - [ ] M5.3: libraries and the shader compiler (AIR to A5xx), compute encoder
 - [ ] M5.4: render pipeline and render encoder: a triangle through Metal
