@@ -49,6 +49,23 @@ Each milestone is testable on its own and ends with a number or a log line, not 
 - CoreAnimation over Metal; PosterBoard preview and Astronomy as acceptance tests.
 - Done when: the idle lock screen costs a fraction of today's CPU and Astronomy renders.
 
+## M5.x - the MTLDevice plug-in (plan, 2026-11-22; reference: hakios-metal + hakios docs/metal-plan.md, behaviour only)
+
+How Metal finds a driver (as hakios does it): an IOService carries the properties `MetalPluginName` and `MetalPluginClassName`; Metal.framework loads the bundle `/System/Library/Extensions/<name>.bundle` and instantiates the named subclass of Metal's private `_MTLDevice`; `MTLCreateSystemDefaultDevice()` then returns it. Our `LavenderGPU` service can carry the properties behind a boot-arg (`lavmetal=1`, off by default: a device that exists and cannot draw changes what CoreAnimation picks).
+
+Three parts, as hakios splits them: (A) the shader compiler, AIR (`.metallib`) into the A5xx ISA; (B) the device bundle (ObjC, a `_MTLDevice` subclass and the objects it hands out, over a C core); (C) the kernel side, which is done (M5.0).
+
+| Step | What | Needs the compiler | Checked by |
+|---|---|---|---|
+| M5.1 | A device that exists: bundle + properties; `MTLCreateSystemDefaultDevice()` returns our class; log every message Metal sends that we do not answer | no | a small test program on the phone (built on the Mac) |
+| M5.2 | Buffers and textures over service buffers (`IOConnectMapMemory64`), queue, command buffer, blit encoder (fill/copy done by CP packets) | no | write, copy, read back through Metal objects |
+| M5.3 | Libraries (`newLibraryWithData:`), the compiler for compute kernels, compute encoder, commit/wait on the fence | yes | a kernel's numbers against a host reference |
+| M5.4 | Render pipeline + render encoder: sysmem pass, our own ladder state (varyings, blend, the RT) | yes (VS+FS) | a triangle through Metal |
+| M5.5 | Present: a drawable the compositor can hand to the panel | yes | frames on screen |
+| M5.6 | CoreAnimation acceptance: PosterBoard preview, Astronomy | yes | the done-when below |
+
+The open decision is the compiler (part A): (1) our own small AIR-to-A5xx backend for just the shaders CoreAnimation uses (hakios's sweep: 39/39 vertex, 95/95 fragment functions of CoreAnimation compile through its front end; ours would be far smaller than a general one); (2) port Mesa's NIR/ir3 into a userland library (MIT, large, a build of its own, and our rule is that Mesa is a behaviour reference only); (3) reuse hakios's AIR front end plus Mesa's ir3 as a dependency. M5.1 and M5.2 do not depend on it.
+
 ## Risks (ordered)
 
 1. Zap shader / secure world: the GPU may stay in secure mode without it. Needs an SCM path from XNU.
