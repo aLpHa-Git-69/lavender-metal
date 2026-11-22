@@ -2611,6 +2611,90 @@ lav_show_on_screen(void)
 	printf("LAVGPU: on-screen: picture shown for 30 s at %u,%u\n", x0, y0);
 }
 
+/*
+ * M5.0: the GPU as an IOKit service (LavenderGPU.cpp). After the ladder reaches step 12 (the CP runs) lavgpu=30 calls
+ * LavenderGPUStart(); the service hands user streams to lavender_gpu_service_submit(), which is synchronous: the
+ * stream goes into the ring, followed by a cache flush and a fence word, and it returns when the GPU wrote the fence.
+ */
+extern void LavenderGPUStart(void);
+extern void LavenderGPUSelfTest(void);
+
+static int lav_svc_ready;
+static uint32_t lav_svc_seq;
+
+int
+lavender_gpu_service_ready(void)
+{
+	return lav_svc_ready;
+}
+
+uint32_t
+lavender_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
+{
+	volatile uint32_t *f = (volatile uint32_t *)(rptr_va + 0xe00);
+	uint32_t seq;
+
+	*status = 0;
+	if (!lav_svc_ready || count == 0 || count > 4096) {
+		*status = EINVAL;
+		return 0;
+	}
+	seq = ++lav_svc_seq;
+	for (uint32_t i = 0; i < count; i++) {
+		ring_put(dw[i]);
+	}
+	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	ring_pkt4(R_UCHE_INVALIDATE_MIN, 5);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0x12);
+	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	ring_pkt7(CP_EVENT_WRITE, 4);
+	ring_put(0x4u | (1u << 30));			/* CACHE_FLUSH_TS */
+	ring_put((uint32_t)(rptr_pa + 0xe00));
+	ring_put((uint32_t)((rptr_pa + 0xe00) >> 32));
+	ring_put(seq);
+	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	if (ring_submit("service stream") != 0) {
+		*status = EIO;
+		return 0;
+	}
+	for (int i = 0; i < 2000; i++) {
+		flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+		if (*f == seq) {
+			return seq;
+		}
+		lav_wait(1);
+	}
+	printf("LAVGPU: service stream %u: the fence was not written (%08x)\n", seq, *f);
+	*status = ETIMEDOUT;
+	return 0;
+}
+
+static void
+lav_service_start(int selftest)
+{
+	if (ring_va == 0 || ring_pa == 0 || fence_pa == 0 || !gx_on) {
+		printf("LAVGPU: service: the CP is not running, not starting\n");
+		return;
+	}
+	*(volatile uint32_t *)(rptr_va + 0xe00) = 0;
+	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+	lav_svc_ready = 1;
+	LavenderGPUStart();
+	printf("LAVGPU: service: started\n");
+	if (selftest) {
+		LavenderGPUSelfTest();
+	}
+	/* the live log can start late: repeat the state for a while */
+	for (int i = 0; i < 90; i++) {
+		lav_wait(10000);
+		printf("LAVGPU: service alive (%d): streams %u, ready %d\n", i, lav_svc_seq, lav_svc_ready);
+	}
+}
+
 static void
 lavender_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 {
@@ -2671,7 +2755,7 @@ lavender_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 	if (step >= 12) {
 		step12_fence_reset();
 	}
-	if (step >= 13) {
+	if (step >= 13 && step < 30) {
 		step13_compute(0);
 	}
 	if (step == 14 || step == 16) {
@@ -2703,7 +2787,7 @@ lavender_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 		step21_draw(5);
 		step21_draw(6);
 	}
-	if (step >= 26) {
+	if (step == 26) {
 		step21_draw(2);
 		step21_draw(4);
 		lav_show_on_screen();
@@ -2721,6 +2805,9 @@ lavender_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 		for (int i = 0; i < 3; i++) {
 			step13_compute(1);
 		}
+	}
+	if (step >= 30) {
+		lav_service_start(step == 31);
 	}
 	printf("LAVGPU: ladder finished\n");
 }
