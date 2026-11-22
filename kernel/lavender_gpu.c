@@ -2651,12 +2651,13 @@ lavender_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
 	ring_put(0);
 	ring_put(0x12);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
-	ring_pkt7(CP_EVENT_WRITE, 4);
-	ring_put(0x4u | (1u << 30));			/* CACHE_FLUSH_TS */
+	ring_pkt7(CP_MEM_WRITE, 3);			/* the fence: a plain CP write, like the user's own */
 	ring_put((uint32_t)(rptr_pa + 0xe00));
 	ring_put((uint32_t)((rptr_pa + 0xe00) >> 32));
 	ring_put(seq);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	*f = 0;
+	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
 	if (ring_submit("service stream") != 0) {
 		*status = EIO;
 		return 0;
