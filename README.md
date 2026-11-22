@@ -61,11 +61,16 @@ verified (on the device unless noted).
 - ~~Buffers in and out (`out = in + 0x11111111`)~~
 - ~~64-thread workgroup: 64 of 64 outputs equal the host reference~~
 
-**M4 - Render and Metal**
+**M4 - Render and Metal** (in progress)
 
-- [ ] 2D blit through the A5xx 2D core (in progress, not yet verified)
-- [ ] One sysmem draw (fd5 sequence)
-- [ ] Textures, blending, depth
+- ~~2D blit through the A5xx 2D core: buffer copy, then RGBA8 rectangle copy, pixel exact~~
+- ~~First sysmem 3D draw: hand-assembled VS/FS, triangle into a 64x64 RGBA8 target, 351/351 pixels~~
+- ~~Texture sampling (4x4 RGBA8, nearest)~~
+- ~~Interpolated texture coordinates through the VPC, 213/213 pixels~~
+- ~~Colour blending (SRC_ALPHA / ONE_MINUS_SRC_ALPHA, ONE/ZERO, ONE/ONE), 351/351 pixels~~
+- 2D solid fill: parked, no variant wrote anything
+- [ ] Draw into the real display framebuffer
+- [ ] Depth
 - [ ] `MTLDevice` plug-in and the IOKit service behind it
 - [ ] `MTLCreateSystemDefaultDevice()` returns a device
 - [ ] CoreAnimation over Metal (PosterBoard preview, Astronomy wallpaper)
