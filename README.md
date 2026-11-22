@@ -61,19 +61,26 @@ verified (on the device unless noted).
 - ~~Buffers in and out (`out = in + 0x11111111`)~~
 - ~~64-thread workgroup: 64 of 64 outputs equal the host reference~~
 
-**M4 - Render and Metal** (in progress)
+**M4 - Render** (done 2026-11-22, depth parked)
 
 - ~~2D blit through the A5xx 2D core: buffer copy, then RGBA8 rectangle copy, pixel exact~~
 - ~~First sysmem 3D draw: hand-assembled VS/FS, triangle into a 64x64 RGBA8 target, 351/351 pixels~~
 - ~~Texture sampling (4x4 RGBA8, nearest)~~
 - ~~Interpolated texture coordinates through the VPC, 213/213 pixels~~
 - ~~Colour blending (SRC_ALPHA / ONE_MINUS_SRC_ALPHA, ONE/ZERO, ONE/ONE), 351/351 pixels~~
+- ~~GPU output on the real panel (the kernel copies the GPU-rendered targets 4x into the scanout; the RB cannot target it directly because its stride is not a multiple of 64)~~
 - 2D solid fill: parked, no variant wrote anything
-- [ ] Draw into the real display framebuffer
-- [ ] Depth
-- [ ] `MTLDevice` plug-in and the IOKit service behind it
-- [ ] `MTLCreateSystemDefaultDevice()` returns a device
-- [ ] CoreAnimation over Metal (PosterBoard preview, Astronomy wallpaper)
+- [ ] Depth (optional; only if CoreAnimation needs it)
+
+**M5 - The Metal device** (in progress)
+
+- ~~M5.0: the GPU as an IOKit service, `LavenderGPU`, with a user client (info, buffer new/free mapped into the client, submit of PM4 words, submit by reference). Verified on the device from the kernel (selftest) and from a userland program: the GPU writes into a mapped buffer and the program reads it back (patch 0319 in the port)~~
+- [ ] M5.1: a device that exists: the `MTLDevice` bundle and `MTLCreateSystemDefaultDevice()` returns it (behind a boot-arg)
+- [ ] M5.2: buffers, textures, command queue, command buffer and blit encoder through Metal's objects
+- [ ] M5.3: libraries and the shader compiler (AIR to A5xx), compute encoder
+- [ ] M5.4: render pipeline and render encoder: a triangle through Metal
+- [ ] M5.5: present a drawable to the panel
+- [ ] M5.6: CoreAnimation over Metal (PosterBoard preview, Astronomy wallpaper)
 - [ ] Idle lock screen costs a fraction of today's `backboardd` CPU (now ~150-170 % of 400 %, ~13 fps)
 
 ## Related repositories
@@ -87,6 +94,8 @@ verified (on the device unless noted).
 
 ```
 docs/       plan, hardware notes, references, measurements
+kernel/     the kernel driver (lavender_gpu.c) and the IOKit service (LavenderGPU.cpp), as built into the port
+userland/   programs that run on the phone (lavgpu_test: exercises the IOKit service)
 refs/       reference trees (not committed; see docs/REFERENCES.md)
 firmware/   GPU firmware taken from the phone's own ROM (not committed)
 tools/      scripts (firmware extraction, DTB reading, probes)
