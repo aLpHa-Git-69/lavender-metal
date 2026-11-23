@@ -1,7 +1,7 @@
 /*
  * lavca_test: CoreAnimation's own renderer drawing a layer tree on the Adreno through the Metal plug-in (M5.6).
  *
- * CARenderer (private on iOS: declared below) renders a CALayer tree into a Metal texture using QuartzCore's compiled pipelines and the
+ * CARenderer renders a CALayer tree into a Metal texture using QuartzCore's compiled pipelines and the
  * real buffers it builds, which is what backboardd does for the screen. This test builds a red layer with a green and a blue child, renders
  * it into a 256x256 BGRA texture on the GPU and reads the pixels back:
  *
@@ -15,18 +15,9 @@
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
 #include <stdio.h>
-
-@interface CARenderer : NSObject
-+ (CARenderer *)rendererWithMTLTexture:(id<MTLTexture>)tex options:(NSDictionary *)opts;
-@property (retain) CALayer * layer;
-@property CGRect bounds;
-- (void)beginFrameAtTime:(CFTimeInterval)t timeStamp:(void *)ts;
-- (void)addUpdateRect:(CGRect)r;
-- (void)render;
-- (CFTimeInterval)nextFrameTime;
-- (void)endFrame;
-@end
 
 enum { kLavMetal = 5 };
 static io_connect_t gConn;
@@ -39,6 +30,7 @@ crashed(int sig)
 	if (gConn != 0) {
 		IOConnectCallStructMethod(gConn, kLavMetal, &off, sizeof(off), NULL, NULL);
 	}
+	{ void * bt[40]; int n = backtrace(bt, 40); backtrace_symbols_fd(bt, n, 2); }
 	signal(sig, SIG_DFL);
 	raise(sig);
 }

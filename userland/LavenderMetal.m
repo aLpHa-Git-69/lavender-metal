@@ -811,6 +811,19 @@ queueLabel(__unused id self, __unused SEL _cmd)
 	return nil;
 }
 
+/* MTLCommandQueueSPI, which CARenderer calls: completion handlers run on the thread that finishes the command buffer here, so the
+ * queue given is accepted and not used */
+static void
+queueSetCompletionQueue(__unused id self, __unused SEL _cmd, __unused id q)
+{
+}
+
+static id
+queueCompletionQueue(__unused id self, __unused SEL _cmd)
+{
+	return nil;
+}
+
 static void
 cbFreeOps(struct cbstate * st)
 {
@@ -1181,6 +1194,14 @@ deviceNewLibraryURL(__unused id self, __unused SEL _cmd, id url, NSError ** err)
 }
 
 static id
+deviceNewPipelineLibrary(__unused id self, __unused SEL _cmd, id path, NSError ** err)
+{
+	lavlog("newPipelineLibraryWithFilePath: %s: pipeline libraries are not supported", path != nil ? [[path description] UTF8String] : "(nil)");
+	lavError(err, @"MTLLibraryErrorDomain", "pipeline libraries are not supported");
+	return nil;
+}
+
+static id
 deviceNewLibraryFile(__unused id self, __unused SEL _cmd, id path, NSError ** err)
 {
 	NSData * d = path != nil ? [NSData dataWithContentsOfFile:path] : nil;
@@ -1278,6 +1299,26 @@ libNewFunctionConstants(id self, SEL cmd, id name, __unused id constants, NSErro
 		lavError(err, @"MTLLibraryErrorDomain", "no such function");
 	}
 	return f;
+}
+
+static id
+libNewFunctionDescriptor(id self, SEL cmd, id desc, NSError ** err)
+{
+	id f = libNewFunction(self, cmd, desc != nil ? [desc name] : nil);
+
+	if (f == nil) {
+		lavError(err, @"MTLLibraryErrorDomain", "no such function");
+	}
+	return f;
+}
+
+static id
+fnNewSpecialized(id self, __unused SEL _cmd, __unused id desc, __unused id archive, __unused id cache, NSError ** err)
+{
+	if (err != NULL) {
+		*err = nil;
+	}
+	return [self retain];
 }
 
 static id
@@ -1976,10 +2017,13 @@ registerComputeClasses(Class device)
 		ADD(gLibraryClass, "functionNames", libFunctionNames, "@@:");
 		ADD(gLibraryClass, "newFunctionWithName:", libNewFunction, "@@:@");
 		ADD(gLibraryClass, "newFunctionWithName:constantValues:error:", libNewFunctionConstants, "@@:@@^@");
+		ADD(gLibraryClass, "newFunctionWithDescriptor:error:", libNewFunctionDescriptor, "@@:@^@");
+		ADD(gFunctionClass, "newSpecializedFunctionWithDescriptor:destinationArchive:functionCache:error:", fnNewSpecialized, "@@:@@@^@");
 		objc_registerClassPair(gLibraryClass);
 		ADD(device, "newLibraryWithData:error:", deviceNewLibraryData, "@@:@^@");
 		ADD(device, "newLibraryWithURL:error:", deviceNewLibraryURL, "@@:@^@");
 		ADD(device, "newLibraryWithFile:error:", deviceNewLibraryFile, "@@:@^@");
+		ADD(device, "newPipelineLibraryWithFilePath:error:", deviceNewPipelineLibrary, "@@:@^@");
 		ADD(device, "newLibraryWithSource:options:error:", deviceNewLibrarySource, "@@:@@^@");
 		ADD(device, "newDefaultLibrary", deviceNoLibrary, "@@:");
 		ADD(device, "newDefaultLibraryWithBundle:error:", deviceNoLibraryBundle, "@@:@^@");
@@ -2069,6 +2113,8 @@ registerObjectClasses(Class device)
 		addStubForwarding(gQueueClass);
 		ADD(gQueueClass, "device", objDevice, "@@:");
 		ADD(gQueueClass, "label", queueLabel, "@@:");
+		ADD(gQueueClass, "setCompletionQueue:", queueSetCompletionQueue, "v@:@");
+		ADD(gQueueClass, "completionQueue", queueCompletionQueue, "@@:");
 		ADD(gQueueClass, "dealloc", queueDealloc, "v@:");
 		ADD(gQueueClass, "commandBuffer", queueCommandBuffer, "@@:");
 		ADD(gQueueClass, "commandBufferWithUnretainedReferences", queueCommandBuffer, "@@:");
