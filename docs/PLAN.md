@@ -254,5 +254,6 @@ What it needed: queue completionQueue, newPipelineLibraryWithFilePath: refused (
 20 texture slots (fixed_frag_lph_cph samples 16 and reads its target as a 17th), half vertex formats, indexed draws, and private memory
 for a5xx render stages (per-stage PVT_MEM buffer; fibers per SP is a guess: 4096, 2 SPs).
 lavqc_test on QuartzCore's default.metallib: 78 drawn, 0 failed (was 70/8), 83 without a pipeline (varying slots 32-34), docs/m56h-phone-quartzcore-draws.txt.
-Open for backboardd: the 83 pipelines without varyings, clip distance, per-fiber guess for private memory, then enabling the device for
+The 83 "no pipeline" are lavqc_test pairing every vertex function with every fragment function: in each the fragment stage reads a varying slot (32, 33 or 34) the vertex stage never writes, which Metal rejects as well, so they are invalid pairs, not a gap (CoreAnimation only builds valid pairs, as lavca_test shows).
+Open for backboardd: clip distance, per-fiber guess for private memory, then enabling the device for
 backboardd behind a boot-arg with the CPU compositor fallback and measuring CPU/fps at the lock screen.
