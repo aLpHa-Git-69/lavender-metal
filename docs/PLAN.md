@@ -135,3 +135,17 @@ of the command buffer copies its rows into the IOSurface (Load actions copy the 
 the IOSurface holds the clear colour and the triangle (1352 pixels, correct corners); no unimplemented message was logged.
 Output: docs/m55-phone-present.txt. Cost: one CPU copy of the frame per present (about 4 MB at 720x1440), to be measured in M5.6.
 What this does not prove: that backboardd/CoreAnimation's compositor shows such a surface on the panel; that is M5.6.
+
+## M5.6 reconnaissance (2026-11-22): what CoreAnimation's own shaders need
+
+`userland/lavsurvey` (CPU only) compiles every function of a .metallib with the plug-in's compiler and says what it uses.
+Against the phone's `/System/Library/Frameworks/QuartzCore.framework/default.metallib` (docs/m56-survey-quartzcore.txt):
+**135 of 141 functions compile** (ir3 machine code). 71 use no textures, 43 use one, 16 two, 2 three. The 6 that do not: 4 tile
+shaders (`tile_downsample_*`, imageblocks; CoreAnimation only asks for them when the device claims tile-shader support, which
+we do not) and 2 fragment functions reading framebuffer attachments through slots past 16 (`fixed_frag_lph_cp*`).
+So the compiler is not the gap; the driver is: the render builder (lava5r.c) has no texture/sampler state, no blending, and
+the encoder no sampler/texture binding. Order of work: (1) fragment textures + samplers (fd5_texture.c: TEX_CONST/TEX_SAMP,
+CP_LOAD_STATE4), `setFragmentTexture:`/`setFragmentSamplerState:`, `newSamplerStateWithDescriptor:`; (2) blending from the
+pipeline's colour attachment (blend state proven on hardware in M4.6); (3) the rest CoreAnimation needs found by running its
+pipelines through the plug-in (log what is refused); only then (4) enabling the device for backboardd, which changes what
+CoreAnimation picks at boot and must be done behind a boot-arg with the CPU compositor as the fallback.

@@ -231,3 +231,34 @@ extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, st
 }
 
 extern "C" void lavcc_stage_free(struct lav5_stage* s) { lavcc_kernel_free(&s->k); }
+
+// ---- a survey of a library: what each function needs, and whether this compiler serves it (lavsurvey) ----
+
+extern "C" int lavcc_probe(struct lavcc_lib* l, unsigned i, char* summary, size_t ssize, char* why, size_t whysize)
+{
+    if (i >= l->lib.functions().size()) return -1;
+    const MetalFunction& fn = l->lib.functions()[i];
+    const uint8_t* bc = nullptr;
+    uint64_t n = 0;
+    summary[0] = 0;
+    if (!l->lib.bitcode(fn, &bc, &n)) { snprintf(why, whysize, "no bitcode"); return 0; }
+    std::string w;
+    if (fn.type == MetalFunction::kKernel) {
+        auto k = compileAir(bc, n, &w);
+        if (!k) { snprintf(why, whysize, "%s", w.c_str()); return 0; }
+        snprintf(summary, ssize, "kernel %u words", k->kernel.numWords);
+        return 1;
+    }
+    auto s = compileStage(bc, n, &w);
+    if (!s) { snprintf(why, whysize, "%s", w.c_str()); return 0; }
+    unsigned buf = 0, tex = 0, smp = 0, img = 0;
+    for (const auto& r : s->resources) {
+        if (r.kind == Resource::kTexture) tex++;
+        else if (r.kind == Resource::kSampler) smp++;
+        else if (r.kind == Resource::kImage) img++;
+        else buf++;
+    }
+    snprintf(summary, ssize, "%s %u words, %u buffers %u textures %u samplers %u images", fn.type == MetalFunction::kVertex ? "vertex" : "fragment",
+             s->stage.k.numWords, buf, tex, smp, img);
+    return 1;
+}
