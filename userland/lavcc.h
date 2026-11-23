@@ -19,6 +19,11 @@ const char * lavcc_function_name(struct lavcc_lib * l, unsigned i, int * type);
 /* 1 with OUT filled (free it with lavcc_kernel_free), 0 with the reason in WHY */
 int lavcc_compile(struct lavcc_lib * l, const char * name, struct lav5_kernel * out, char * why, size_t whysize);
 void lavcc_kernel_free(struct lav5_kernel * k);
+/* a vertex and a fragment function compiled and linked (render pipeline); 1 with VS, FS and LINK filled (free each stage with
+ * lavcc_stage_free), 0 with the reason in WHY */
+int lavcc_compile_program(struct lavcc_lib * lv, const char * vname, struct lavcc_lib * lf, const char * fname, struct lav5_stage * vs,
+    struct lav5_stage * fs, struct lav5_link * link, char * why, size_t whysize);
+void lavcc_stage_free(struct lav5_stage * s);
 
 #ifdef __cplusplus
 }

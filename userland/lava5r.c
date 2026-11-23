@@ -1,0 +1,653 @@
+/*
+ * lava5r: one render pass of one draw on the A5xx, in sysmem (bypass) mode, as a PM4 stream. The order and the values are
+ * Mesa's gallium freedreno driver (a5xx/fd5_program.c, fd5_emit.c, fd5_gmem.c, fd5_draw.c; MIT, Copyright Rob Clark and the
+ * Mesa contributors); the register encoders are the headers Mesa generates (a5xx/). The shaders are what ir3 compiled
+ * (lavcc.cpp), taken as the plain data of lava5.h.
+ */
+#include <stdint.h>
+#include <string.h>
+#include "lava5.h"
+#define A5XX_MAX_RENDER_TARGETS 8
+
+static inline uint32_t
+fui(float f)
+{
+	uint32_t u;
+
+	memcpy(&u, &f, 4);
+	return u;
+}
+
+static inline uint16_t
+_mesa_float_to_half(float f)
+{
+	(void)f;
+	return 0;
+}
+
+#include "a5xx/adreno_common.xml.h"
+#include "a5xx/adreno_pm4.xml.h"
+#include "a5xx/a3xx.xml.h"
+#include "a5xx/a5xx.xml.h"
+
+struct st {
+	uint32_t * w;
+	size_t n, cap;
+	int over;
+};
+
+static unsigned
+par(unsigned v)
+{
+	return (__builtin_popcount(v) & 1) ^ 1;
+}
+
+static void
+out(struct st * s, uint32_t v)
+{
+	if (s->n < s->cap) {
+		s->w[s->n++] = v;
+	} else {
+		s->over = 1;
+	}
+}
+
+static void
+pkt4(struct st * s, unsigned reg, unsigned cnt)
+{
+	out(s, 0x40000000 | cnt | par(cnt) << 7 | (reg & 0x3ffff) << 8 | par(reg) << 27);
+}
+
+static void
+pkt7(struct st * s, unsigned op, unsigned cnt)
+{
+	out(s, 0x70000000 | cnt | par(cnt) << 15 | (op & 0x7f) << 16 | par(op) << 23);
+}
+
+static void
+set(struct st * s, unsigned reg, uint32_t v)
+{
+	pkt4(s, reg, 1);
+	out(s, v);
+}
+
+static void
+zeros(struct st * s, unsigned reg, unsigned n)
+{
+	pkt4(s, reg, n);
+	for (unsigned i = 0; i < n; i++) {
+		out(s, 0);
+	}
+}
+
+#define regid(num, comp) (((num) << 2) | (comp))
+#define NOREG regid(63, 0)
+#define VALIDREG(r) ((r) != NOREG)
+#define COND(c, v) ((c) ? (v) : 0)
+
+static void
+wfi(struct st * s)
+{
+	pkt7(s, CP_WAIT_FOR_IDLE, 0);
+}
+
+/* fd5_emit_restore */
+static void
+restore(struct st * s)
+{
+	pkt7(s, CP_SET_RENDER_MODE, 5);
+	out(s, CP_SET_RENDER_MODE_0_MODE(BYPASS));
+	out(s, 0); out(s, 0); out(s, 0); out(s, 0);
+	pkt4(s, REG_A5XX_UCHE_CACHE_INVALIDATE_MIN_LO, 5);
+	out(s, 0); out(s, 0); out(s, 0); out(s, 0); out(s, 0x12);
+	wfi(s);
+	set(s, REG_A5XX_HLSQ_UPDATE_CNTL, 0xfffff);
+	set(s, REG_A5XX_PC_RESTART_INDEX, 0xffffffff);
+	set(s, REG_A5XX_PC_RASTER_CNTL, 0x12);
+	pkt4(s, REG_A5XX_GRAS_SU_POINT_MINMAX, 2);
+	out(s, A5XX_GRAS_SU_POINT_MINMAX_MIN(1.0f) | A5XX_GRAS_SU_POINT_MINMAX_MAX(4092.0f));
+	out(s, A5XX_GRAS_SU_POINT_SIZE(0.5f));
+	set(s, REG_A5XX_GRAS_SU_CONSERVATIVE_RAS_CNTL, 0);
+	set(s, REG_A5XX_GRAS_SC_SCREEN_SCISSOR_CNTL, 0);
+	set(s, REG_A5XX_SP_VS_CONFIG_MAX_CONST, 0);
+	set(s, REG_A5XX_SP_FS_CONFIG_MAX_CONST, 0);
+	zeros(s, REG_A5XX_UNKNOWN_E292, 2);
+	set(s, REG_A5XX_RB_MODE_CNTL, 0x44);
+	set(s, REG_A5XX_RB_DBG_ECO_CNTL, 0x00100000);
+	set(s, REG_A5XX_VFD_MODE_CNTL, 0);
+	set(s, REG_A5XX_PC_MODE_CNTL, 0x1f);
+	set(s, REG_A5XX_SP_MODE_CNTL, 0x1e);
+	set(s, REG_A5XX_SP_DBG_ECO_CNTL, 0x40000800);
+	set(s, REG_A5XX_TPL1_MODE_CNTL, 0x544);
+	pkt4(s, REG_A5XX_HLSQ_TIMEOUT_THRESHOLD_0, 2);
+	out(s, 0x80); out(s, 0);
+	set(s, REG_A5XX_VPC_DBG_ECO_CNTL, 0x400);
+	set(s, REG_A5XX_HLSQ_MODE_CNTL, 1);
+	set(s, REG_A5XX_VPC_MODE_CNTL, 0);
+	pkt7(s, CP_SET_DRAW_STATE, 3);
+	out(s, CP_SET_DRAW_STATE__0_COUNT(0) | CP_SET_DRAW_STATE__0_DISABLE_ALL_GROUPS | CP_SET_DRAW_STATE__0_GROUP_ID(0));
+	out(s, CP_SET_DRAW_STATE__1_ADDR_LO(0));
+	out(s, CP_SET_DRAW_STATE__2_ADDR_HI(0));
+	set(s, REG_A5XX_GRAS_SU_CONSERVATIVE_RAS_CNTL, 0);
+	set(s, REG_A5XX_GRAS_SC_BIN_CNTL, 0);
+	set(s, REG_A5XX_VPC_FS_PRIMITIVEID_CNTL, 0xff);
+	set(s, REG_A5XX_VPC_SO_OVERRIDE, A5XX_VPC_SO_OVERRIDE_SO_DISABLE);
+	zeros(s, REG_A5XX_VPC_SO_BUFFER_BASE_LO(0), 3);
+	zeros(s, REG_A5XX_VPC_SO_FLUSH_BASE_LO(0), 2);
+	set(s, REG_A5XX_PC_GS_PARAM, 0);
+	set(s, REG_A5XX_PC_HS_PARAM, 0);
+	set(s, REG_A5XX_TPL1_TP_FS_ROTATION_CNTL, 0);
+	set(s, REG_A5XX_UNKNOWN_E004, 0);
+	set(s, REG_A5XX_GRAS_SU_LAYERED, 0);
+	set(s, REG_A5XX_VPC_SO_BUF_CNTL, 0);
+	set(s, REG_A5XX_VPC_SO_BUFFER_OFFSET(0), 0);
+	set(s, REG_A5XX_PC_GS_LAYERED, 0);
+	set(s, REG_A5XX_UNKNOWN_E5AB, 0);
+	set(s, REG_A5XX_UNKNOWN_E5C2, 0);
+	zeros(s, REG_A5XX_VPC_SO_BUFFER_BASE_LO(1), 3);
+	zeros(s, REG_A5XX_VPC_SO_BUFFER_OFFSET(1), 6);
+	zeros(s, REG_A5XX_VPC_SO_BUFFER_OFFSET(2), 6);
+	zeros(s, REG_A5XX_VPC_SO_BUFFER_OFFSET(3), 3);
+	set(s, REG_A5XX_UNKNOWN_E5DB, 0);
+	set(s, REG_A5XX_SP_HS_CTRL_REG0, 0);
+	set(s, REG_A5XX_SP_GS_CTRL_REG0, 0);
+	zeros(s, REG_A5XX_TPL1_VS_TEX_COUNT, 4);
+	zeros(s, REG_A5XX_TPL1_FS_TEX_COUNT, 2);
+	zeros(s, REG_A5XX_UNKNOWN_E7C0, 3);
+	zeros(s, REG_A5XX_UNKNOWN_E7C5, 3);
+	zeros(s, REG_A5XX_UNKNOWN_E7CA, 3);
+	zeros(s, REG_A5XX_UNKNOWN_E7CF, 3);
+	zeros(s, REG_A5XX_UNKNOWN_E7D4, 3);
+	zeros(s, REG_A5XX_UNKNOWN_E7D9, 3);
+	set(s, REG_A5XX_RB_CLEAR_CNTL, 0);
+}
+
+/* fd5_emit_shader: the code into the stage's shader block, from memory */
+static void
+emit_shader(struct st * s, enum a4xx_state_block sb, uint64_t code, unsigned instrlen)
+{
+	pkt7(s, CP_LOAD_STATE4, 3);
+	out(s, CP_LOAD_STATE4_0_DST_OFF(0) | CP_LOAD_STATE4_0_STATE_SRC(SS4_INDIRECT) | CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
+	    CP_LOAD_STATE4_0_NUM_UNIT(instrlen));
+	out(s, (uint32_t)code | ST4_SHADER);
+	out(s, (uint32_t)(code >> 32));
+}
+
+/* fd5_emit_shader_obj: SP_xS_OBJ_START_LO/HI, PVT_MEM_PARAM, PVT_MEM_ADDR (2), PVT_MEM_SIZE */
+static void
+emit_shader_obj(struct st * s, unsigned reg, uint64_t code)
+{
+	pkt4(s, reg, 6);
+	out(s, (uint32_t)code);
+	out(s, (uint32_t)(code >> 32));
+	out(s, A5XX_SP_VS_PVT_MEM_PARAM_MEMSIZEPERITEM(0) | A5XX_SP_VS_PVT_MEM_PARAM_HWSTACKOFFSET(0));
+	out(s, 0);
+	out(s, 0);
+	out(s, A5XX_SP_VS_PVT_MEM_SIZE_TOTALPVTMEMSIZE(0));
+}
+
+static void
+load_consts(struct st * s, enum a4xx_state_block sb, unsigned vec4, const uint32_t * d, unsigned dwords)
+{
+	while (dwords > 0) {
+		unsigned k = dwords > 256 ? 256 : dwords;
+
+		pkt7(s, CP_LOAD_STATE4, 3 + k);
+		out(s, CP_LOAD_STATE4_0_DST_OFF(vec4) | CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) | CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
+		    CP_LOAD_STATE4_0_NUM_UNIT(k / 4));
+		out(s, CP_LOAD_STATE4_1_EXT_SRC_ADDR(0) | CP_LOAD_STATE4_1_STATE_TYPE(ST4_CONSTANTS));
+		out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+		for (unsigned i = 0; i < k; i++) {
+			out(s, d[i]);
+		}
+		d += k;
+		dwords -= k;
+		vec4 += k / 4;
+	}
+}
+
+/* a stage's constants: the pushed ranges of the buffers bound for it, the immediates, then its driver params */
+static const char *
+emit_stage_consts(struct st * s, enum a4xx_state_block sb, const struct lav5_kernel * k, const struct lav5_binding * buf,
+    const uint32_t * dp, unsigned dpn)
+{
+	for (unsigned i = 0; i < k->nranges; i++) {
+		const struct lav5_range * r = &k->ranges[i];
+		const struct lav5_binding * b = r->block < LAV5_MAX_BUFFERS ? &buf[r->block] : NULL;
+		uint32_t tmp[256];
+
+		if (r->size_dwords == 0 || r->size_dwords % 4 != 0 || r->size_dwords > 256) {
+			return "a constant range that is not a whole number of vec4 or longer than 256 dwords";
+		}
+		if (r->offset_vec4 + r->size_dwords / 4 > k->constlen) {
+			return "a constant range runs past the constant file";
+		}
+		if (b == NULL || b->cpu == NULL) {
+			return "a constant range reads a buffer nothing is bound at";
+		}
+		memset(tmp, 0, r->size_dwords * 4);
+		for (unsigned j = 0; j < r->size_dwords; j++) {
+			uint64_t byte = (uint64_t)(r->start_dword + j) * 4;
+
+			if (byte + 4 <= b->bytes) {
+				memcpy(&tmp[j], (const uint8_t *)b->cpu + byte, 4);
+			}
+		}
+		load_consts(s, sb, r->offset_vec4, tmp, r->size_dwords);
+	}
+	if (k->nimm != 0) {
+		unsigned n = (k->nimm + 3) & ~3u;
+		uint32_t tmp[1024];
+
+		if (k->imm_vec4 + n / 4 > k->constlen || n > 1024) {
+			return "the immediates run past the constant file";
+		}
+		memset(tmp, 0, n * 4);
+		memcpy(tmp, k->imm, k->nimm * 4);
+		load_consts(s, sb, k->imm_vec4, tmp, n);
+	}
+	if (dp != NULL && k->dp_vec4 >= 0) {
+		unsigned avail = (k->constlen - (uint32_t)k->dp_vec4) * 4;
+		unsigned n = dpn < avail ? dpn : avail;
+
+		n &= ~3u;
+		if (n != 0) {
+			load_consts(s, sb, (uint32_t)k->dp_vec4, dp, n);
+		}
+	}
+	return NULL;
+}
+
+size_t
+lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, const char ** why)
+{
+	struct st st = { words, 0, cap, 0 }, * s = &st;
+	const struct lav5_stage * vs = r->vs, * fs = r->fs;
+	const struct lav5_link * l = r->link;
+	unsigned vs_instrlen = vs->k.instrlen, fs_instrlen = fs->k.instrlen;
+	unsigned vs_constlen = vs->k.constlen / 4, fs_constlen = fs->k.constlen / 4;
+	unsigned vs_constoff = 0, fs_constoff = vs_constlen;
+	unsigned fs_instroff, vs_instroff = 0;
+	enum a3xx_threadsize fssz = fs->k.double_threadsize ? FOUR_QUADS : TWO_QUADS;
+	uint32_t pos_regid = vs->position_regid, psize_regid = vs->point_size_regid;
+	unsigned psize_loc = l->psize_loc;
+	const char * e;
+	unsigned i, j, nvtx = 0;
+	uint32_t color_fmt = r->rt_format == 1 ? RB5_R8G8B8A8_UNORM : RB5_R8G8B8A8_UNORM;
+	enum a3xx_color_swap swap = r->rt_format == 1 ? WZYX : WXYZ;
+	int32_t vp_x, vp_y;
+
+	*why = NULL;
+	if (vs->nattr != r->nattr) {
+		*why = "the vertex stage's attributes and the vertex descriptor's differ in number";
+		return 0;
+	}
+	if (vs->clip_mask || vs->cull_mask || VALIDREG(psize_regid)) {
+		*why = "the vertex stage writes clip distances or a point size: not served yet";
+		return 0;
+	}
+	if (!VALIDREG(pos_regid)) {
+		*why = "the vertex stage writes no position";
+		return 0;
+	}
+	if (fs->ncolor != 1) {
+		*why = "the fragment stage must write exactly one colour";
+		return 0;
+	}
+	if (vs->k.num_ssbos || fs->k.num_ssbos || vs->k.shared_size || fs->k.shared_size || vs->k.pvtmem_size || fs->k.pvtmem_size) {
+		*why = "a stage with device buffers, threadgroup or private memory: not served yet";
+		return 0;
+	}
+	/* setup_stages: when both do not fit the instruction memory, one or both run from external memory */
+	if (vs_instrlen + fs_instrlen > 64) {
+		if (fs_instrlen < 64) {
+			vs_instrlen = 0;
+		} else if (vs_instrlen < 64) {
+			fs_instrlen = 0;
+		} else {
+			vs_instrlen = fs_instrlen = 0;
+		}
+	}
+	fs_instroff = 64 - fs_instrlen;
+
+	/* ---- fd5_emit_sysmem_prep ---- */
+	restore(s);
+	pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
+	out(s, 0);
+	pkt7(s, CP_EVENT_WRITE, 1);
+	out(s, PC_CCU_INVALIDATE_COLOR);
+	set(s, REG_A5XX_PC_POWER_CNTL, 1);
+	set(s, REG_A5XX_VFD_POWER_CNTL, 1);
+	wfi(s);
+	set(s, REG_A5XX_RB_CCU_CNTL, 0x10000000);
+	set(s, REG_A5XX_RB_CNTL, A5XX_RB_CNTL_WIDTH(0) | A5XX_RB_CNTL_HEIGHT(0) | A5XX_RB_CNTL_BYPASS);
+	pkt4(s, REG_A5XX_GRAS_SC_WINDOW_SCISSOR_TL, 2);
+	out(s, A5XX_GRAS_SC_WINDOW_SCISSOR_TL_X(0) | A5XX_GRAS_SC_WINDOW_SCISSOR_TL_Y(0));
+	out(s, A5XX_GRAS_SC_WINDOW_SCISSOR_BR_X(r->rt_width - 1) | A5XX_GRAS_SC_WINDOW_SCISSOR_BR_Y(r->rt_height - 1));
+	pkt4(s, REG_A5XX_RB_RESOLVE_CNTL_1, 2);
+	out(s, A5XX_RB_RESOLVE_CNTL_1_X(0) | A5XX_RB_RESOLVE_CNTL_1_Y(0));
+	out(s, A5XX_RB_RESOLVE_CNTL_2_X(r->rt_width - 1) | A5XX_RB_RESOLVE_CNTL_2_Y(r->rt_height - 1));
+	set(s, REG_A5XX_RB_WINDOW_OFFSET, A5XX_RB_WINDOW_OFFSET_X(0) | A5XX_RB_WINDOW_OFFSET_Y(0));
+	set(s, REG_A5XX_VPC_SO_OVERRIDE, 0);
+	pkt7(s, CP_SET_VISIBILITY_OVERRIDE, 1);
+	out(s, 0x1);
+
+	/* emit_zs with no depth buffer */
+	pkt4(s, REG_A5XX_RB_DEPTH_BUFFER_INFO, 5);
+	out(s, A5XX_RB_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH5_NONE));
+	out(s, 0); out(s, 0); out(s, 0); out(s, 0);
+	set(s, REG_A5XX_GRAS_SU_DEPTH_BUFFER_INFO, A5XX_GRAS_SU_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH5_NONE));
+	zeros(s, REG_A5XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
+	set(s, REG_A5XX_RB_STENCIL_INFO, 0);
+
+	/* emit_mrt: colour target 0, the others empty */
+	for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
+		pkt4(s, REG_A5XX_RB_MRT_BUF_INFO(i), 5);
+		if (i == 0) {
+			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(color_fmt) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
+			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(swap));
+			out(s, A5XX_RB_MRT_PITCH(r->rt_pitch));
+			out(s, A5XX_RB_MRT_ARRAY_PITCH(r->rt_pitch * r->rt_height));
+			out(s, (uint32_t)r->rt_gpu);
+			out(s, (uint32_t)(r->rt_gpu >> 32));
+		} else {
+			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(0) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
+			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX));
+			out(s, A5XX_RB_MRT_PITCH(0));
+			out(s, A5XX_RB_MRT_ARRAY_PITCH(0));
+			out(s, 0);
+			out(s, 0);
+		}
+		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(i == 0 ? color_fmt : 0));
+		zeros(s, REG_A5XX_RB_MRT_FLAG_BUFFER(i), 4);
+	}
+	/* emit_msaa: one sample */
+	pkt4(s, REG_A5XX_TPL1_TP_RAS_MSAA_CNTL, 2);
+	out(s, A5XX_TPL1_TP_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
+	out(s, A5XX_TPL1_TP_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_TPL1_TP_DEST_MSAA_CNTL_MSAA_DISABLE);
+	pkt4(s, REG_A5XX_RB_RAS_MSAA_CNTL, 2);
+	out(s, A5XX_RB_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
+	out(s, A5XX_RB_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_RB_DEST_MSAA_CNTL_MSAA_DISABLE);
+	pkt4(s, REG_A5XX_GRAS_SC_RAS_MSAA_CNTL, 2);
+	out(s, A5XX_GRAS_SC_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
+	out(s, A5XX_GRAS_SC_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_GRAS_SC_DEST_MSAA_CNTL_MSAA_DISABLE);
+
+	/* ---- fd5_emit_state ---- */
+	set(s, REG_A5XX_RB_RENDER_COMPONENTS, A5XX_RB_RENDER_COMPONENTS_RT0(0xf));
+	set(s, REG_A5XX_RB_ALPHA_CONTROL, 0);
+	set(s, REG_A5XX_RB_STENCIL_CONTROL, 0);
+	set(s, REG_A5XX_GRAS_LRZ_CNTL, 0);
+	pkt4(s, REG_A5XX_RB_STENCILREFMASK, 2);
+	out(s, 0); out(s, 0);
+	set(s, REG_A5XX_RB_DEPTH_CNTL, 0);
+	set(s, REG_A5XX_RB_DEPTH_PLANE_CNTL, 0);
+	set(s, REG_A5XX_GRAS_SU_DEPTH_PLANE_CNTL, 0);
+
+	/* scissor (Metal's, top-left origin: the same numbers) */
+	pkt4(s, REG_A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0, 2);
+	out(s, A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_X(r->scissor[0]) | A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_Y(r->scissor[1]));
+	out(s, A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_X(r->scissor[0] + r->scissor[2] - 1) |
+	    A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_Y(r->scissor[1] + r->scissor[3] - 1));
+	pkt4(s, REG_A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0, 2);
+	out(s, A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_X(r->scissor[0]) | A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_Y(r->scissor[1]));
+	out(s, A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_X(r->scissor[0] + r->scissor[2] - 1) |
+	    A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_Y(r->scissor[1] + r->scissor[3] - 1));
+
+	/* viewport: NDC y up to a window y down (Metal's), z in [0, 1] */
+	(void)vp_x; (void)vp_y;
+	wfi(s);
+	pkt4(s, REG_A5XX_GRAS_CL_VPORT_XOFFSET_0, 6);
+	out(s, A5XX_GRAS_CL_VPORT_XOFFSET_0(r->viewport[0] + r->viewport[2] * 0.5f));
+	out(s, A5XX_GRAS_CL_VPORT_XSCALE_0(r->viewport[2] * 0.5f));
+	out(s, A5XX_GRAS_CL_VPORT_YOFFSET_0(r->viewport[1] + r->viewport[3] * 0.5f));
+	out(s, A5XX_GRAS_CL_VPORT_YSCALE_0(-r->viewport[3] * 0.5f));
+	out(s, A5XX_GRAS_CL_VPORT_ZOFFSET_0(r->viewport[4]));
+	out(s, A5XX_GRAS_CL_VPORT_ZSCALE_0(r->viewport[5] - r->viewport[4]));
+
+	/* ---- fd5_program_emit ---- */
+	pkt4(s, REG_A5XX_HLSQ_VS_CONFIG, 5);
+	out(s, A5XX_HLSQ_VS_CONFIG_CONSTOBJECTOFFSET(vs_constoff) | A5XX_HLSQ_VS_CONFIG_SHADEROBJOFFSET(vs_instroff) | A5XX_HLSQ_VS_CONFIG_ENABLED);
+	out(s, A5XX_HLSQ_FS_CONFIG_CONSTOBJECTOFFSET(fs_constoff) | A5XX_HLSQ_FS_CONFIG_SHADEROBJOFFSET(fs_instroff) | A5XX_HLSQ_FS_CONFIG_ENABLED);
+	out(s, A5XX_HLSQ_HS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_HLSQ_HS_CONFIG_SHADEROBJOFFSET(fs_instroff));
+	out(s, A5XX_HLSQ_DS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_HLSQ_DS_CONFIG_SHADEROBJOFFSET(fs_instroff));
+	out(s, A5XX_HLSQ_GS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_HLSQ_GS_CONFIG_SHADEROBJOFFSET(fs_instroff));
+	set(s, REG_A5XX_HLSQ_CS_CONFIG, 0);
+	pkt4(s, REG_A5XX_HLSQ_VS_CNTL, 5);
+	out(s, A5XX_HLSQ_VS_CNTL_INSTRLEN(vs_instrlen));
+	out(s, A5XX_HLSQ_FS_CNTL_INSTRLEN(fs_instrlen));
+	out(s, A5XX_HLSQ_HS_CNTL_INSTRLEN(0));
+	out(s, A5XX_HLSQ_DS_CNTL_INSTRLEN(0));
+	out(s, A5XX_HLSQ_GS_CNTL_INSTRLEN(0));
+	pkt4(s, REG_A5XX_SP_VS_CONFIG, 5);
+	out(s, A5XX_SP_VS_CONFIG_CONSTOBJECTOFFSET(vs_constoff) | A5XX_SP_VS_CONFIG_SHADEROBJOFFSET(vs_instroff) | A5XX_SP_VS_CONFIG_ENABLED);
+	out(s, A5XX_SP_FS_CONFIG_CONSTOBJECTOFFSET(fs_constoff) | A5XX_SP_FS_CONFIG_SHADEROBJOFFSET(fs_instroff) | A5XX_SP_FS_CONFIG_ENABLED);
+	out(s, A5XX_SP_HS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_SP_HS_CONFIG_SHADEROBJOFFSET(fs_instroff));
+	out(s, A5XX_SP_DS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_SP_DS_CONFIG_SHADEROBJOFFSET(fs_instroff));
+	out(s, A5XX_SP_GS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_SP_GS_CONFIG_SHADEROBJOFFSET(fs_instroff));
+	set(s, REG_A5XX_SP_CS_CONFIG, 0);
+	pkt4(s, REG_A5XX_HLSQ_VS_CONSTLEN, 2);
+	out(s, vs_constlen); out(s, vs_instrlen);
+	pkt4(s, REG_A5XX_HLSQ_FS_CONSTLEN, 2);
+	out(s, fs_constlen); out(s, fs_instrlen);
+	zeros(s, REG_A5XX_HLSQ_HS_CONSTLEN, 2);
+	zeros(s, REG_A5XX_HLSQ_DS_CONSTLEN, 2);
+	zeros(s, REG_A5XX_HLSQ_GS_CONSTLEN, 2);
+	zeros(s, REG_A5XX_HLSQ_CS_CONSTLEN, 2);
+
+	set(s, REG_A5XX_SP_VS_CTRL_REG0,
+	    A5XX_SP_VS_CTRL_REG0_HALFREGFOOTPRINT((unsigned)(vs->k.max_half_reg + 1)) |
+	    A5XX_SP_VS_CTRL_REG0_FULLREGFOOTPRINT((unsigned)(vs->k.max_reg + 1)) |
+	    COND(vs_instrlen != 0, A5XX_SP_VS_CTRL_REG0_BUFFER) | 0x2 | A5XX_SP_VS_CTRL_REG0_BRANCHSTACK(vs->k.branchstack) |
+	    COND(vs->need_pixlod, A5XX_SP_VS_CTRL_REG0_PIXLODENABLE));
+
+	pkt4(s, REG_A5XX_VPC_VAR_DISABLE(0), 4);
+	for (i = 0; i < 4; i++) {
+		out(s, ~l->varmask[i]);
+	}
+	for (i = 0, j = 0; i < 16 && j < l->cnt; i++) {
+		uint32_t reg = 0;
+
+		pkt4(s, REG_A5XX_SP_VS_OUT_REG(i), 1);
+		reg |= A5XX_SP_VS_OUT_REG_A_REGID(l->var[j].regid) | A5XX_SP_VS_OUT_REG_A_COMPMASK(l->var[j].compmask);
+		j++;
+		if (j < 32) {
+			reg |= A5XX_SP_VS_OUT_REG_B_REGID(l->var[j].regid) | A5XX_SP_VS_OUT_REG_B_COMPMASK(l->var[j].compmask);
+		}
+		j++;
+		out(s, reg);
+	}
+	for (i = 0, j = 0; i < 8 && j < l->cnt; i++) {
+		uint32_t reg = 0;
+
+		pkt4(s, REG_A5XX_SP_VS_VPC_DST_REG(i), 1);
+		reg |= A5XX_SP_VS_VPC_DST_REG_OUTLOC0(j < 32 ? l->var[j].loc : 0); j++;
+		reg |= A5XX_SP_VS_VPC_DST_REG_OUTLOC1(j < 32 ? l->var[j].loc : 0); j++;
+		reg |= A5XX_SP_VS_VPC_DST_REG_OUTLOC2(j < 32 ? l->var[j].loc : 0); j++;
+		reg |= A5XX_SP_VS_VPC_DST_REG_OUTLOC3(j < 32 ? l->var[j].loc : 0); j++;
+		out(s, reg);
+	}
+	emit_shader_obj(s, REG_A5XX_SP_VS_OBJ_START_LO, r->vs_code);
+	if (vs_instrlen) {
+		emit_shader(s, SB4_VS_SHADER, r->vs_code, vs_instrlen);
+	}
+	set(s, REG_A5XX_PC_PRIM_VTX_CNTL, 0);
+	set(s, REG_A5XX_SP_PRIMITIVE_CNTL, A5XX_SP_PRIMITIVE_CNTL_VSOUT(l->cnt));
+	set(s, REG_A5XX_VPC_CNTL_0, A5XX_VPC_CNTL_0_STRIDE_IN_VPC(l->max_loc) | COND(fs->total_in > 0, A5XX_VPC_CNTL_0_VARYING) | 0x10000);
+	emit_shader_obj(s, REG_A5XX_SP_FS_OBJ_START_LO, r->fs_code);
+
+	pkt4(s, REG_A5XX_HLSQ_CONTROL_0_REG, 5);
+	out(s, A5XX_HLSQ_CONTROL_0_REG_FSTHREADSIZE(fssz) | A5XX_HLSQ_CONTROL_0_REG_CSTHREADSIZE(TWO_QUADS) | 0x00000880);
+	out(s, A5XX_HLSQ_CONTROL_1_REG_PRIMALLOCTHRESHOLD(63));
+	out(s, A5XX_HLSQ_CONTROL_2_REG_FACEREGID(fs->face_regid) | A5XX_HLSQ_CONTROL_2_REG_SAMPLEID(NOREG) |
+	    A5XX_HLSQ_CONTROL_2_REG_SAMPLEMASK(NOREG) | A5XX_HLSQ_CONTROL_2_REG_CENTERRHW(fs->ij_regid[3]));
+	out(s, A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_PIXEL(fs->ij_regid[0]) | A5XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_PIXEL(fs->ij_regid[4]) |
+	    A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(fs->ij_regid[2]) | A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(fs->ij_regid[5]));
+	out(s, A5XX_HLSQ_CONTROL_4_REG_XYCOORDREGID(fs->frag_coord_regid) |
+	    A5XX_HLSQ_CONTROL_4_REG_ZWCOORDREGID(VALIDREG(fs->frag_coord_regid) ? fs->frag_coord_regid + 2 : NOREG) |
+	    A5XX_HLSQ_CONTROL_4_REG_IJ_PERSP_SAMPLE(fs->ij_regid[1]) | A5XX_HLSQ_CONTROL_4_REG_IJ_LINEAR_SAMPLE(fs->ij_regid[6]));
+
+	set(s, REG_A5XX_SP_FS_CTRL_REG0,
+	    COND(fs->total_in > 0, A5XX_SP_FS_CTRL_REG0_VARYING) | 0x40002 | COND(fs_instrlen != 0, A5XX_SP_FS_CTRL_REG0_BUFFER) |
+	    A5XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) | A5XX_SP_FS_CTRL_REG0_HALFREGFOOTPRINT((unsigned)(fs->k.max_half_reg + 1)) |
+	    A5XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT((unsigned)(fs->k.max_reg + 1)) | A5XX_SP_FS_CTRL_REG0_BRANCHSTACK(fs->k.branchstack) |
+	    COND(fs->need_pixlod, A5XX_SP_FS_CTRL_REG0_PIXLODENABLE));
+	set(s, REG_A5XX_HLSQ_UPDATE_CNTL, 0x020fffff);
+	set(s, REG_A5XX_VPC_GS_SIV_CNTL, 0x0000ffff);
+	set(s, REG_A5XX_SP_SP_CNTL, 0x00000010);
+
+	{
+		uint32_t ij = 0, rc0 = 0;
+
+		if (VALIDREG(fs->ij_regid[0])) { ij |= A5XX_GRAS_CNTL_IJ_PERSP_PIXEL; rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_PERSP_PIXEL; }
+		if (VALIDREG(fs->ij_regid[2])) { ij |= A5XX_GRAS_CNTL_IJ_PERSP_CENTROID; rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_PERSP_CENTROID; }
+		if (VALIDREG(fs->ij_regid[1])) { ij |= A5XX_GRAS_CNTL_IJ_PERSP_SAMPLE; rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_PERSP_SAMPLE; }
+		if (VALIDREG(fs->ij_regid[4])) { ij |= A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL; rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL; }
+		if (VALIDREG(fs->ij_regid[5])) { ij |= A5XX_GRAS_CNTL_IJ_LINEAR_CENTROID; rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_CENTROID; }
+		if (VALIDREG(fs->ij_regid[6])) { ij |= A5XX_GRAS_CNTL_IJ_LINEAR_SAMPLE; rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_SAMPLE; }
+		if (fs->frag_coord_compmask != 0) {
+			ij |= A5XX_GRAS_CNTL_COORD_MASK(fs->frag_coord_compmask) | A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL;
+			rc0 |= A5XX_RB_RENDER_CONTROL0_COORD_MASK(fs->frag_coord_compmask) | A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL;
+		}
+		if (VALIDREG(fs->face_regid)) {
+			ij |= A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL;
+			rc0 |= A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL;
+		}
+		set(s, REG_A5XX_GRAS_CNTL, ij);
+		pkt4(s, REG_A5XX_RB_RENDER_CONTROL0, 2);
+		out(s, rc0);
+		out(s, COND(VALIDREG(fs->face_regid), A5XX_RB_RENDER_CONTROL1_FACENESS));
+	}
+
+	pkt4(s, REG_A5XX_SP_FS_OUTPUT_REG(0), 8);
+	for (i = 0; i < 8; i++) {
+		uint32_t rid = i < fs->ncolor ? fs->color_regid[i] : NOREG;
+
+		out(s, A5XX_SP_FS_OUTPUT_REG_REGID(rid) | COND(i < fs->ncolor && fs->color_half[i], A5XX_SP_FS_OUTPUT_REG_HALF_PRECISION));
+	}
+	set(s, REG_A5XX_VPC_PACK, A5XX_VPC_PACK_NUMNONPOSVAR(fs->total_in) | A5XX_VPC_PACK_PSIZELOC(psize_loc));
+	pkt4(s, REG_A5XX_VPC_VARYING_INTERP_MODE(0), 8);
+	for (i = 0; i < 8; i++) {
+		out(s, l->interp[i]);
+	}
+	zeros(s, REG_A5XX_VPC_VARYING_PS_REPL_MODE(0), 8);
+	set(s, REG_A5XX_GRAS_VS_CL_CNTL, 0);
+	set(s, REG_A5XX_VPC_CLIP_CNTL, A5XX_VPC_CLIP_CNTL_CLIP_DIST_03_LOC(0xff) | A5XX_VPC_CLIP_CNTL_CLIP_DIST_47_LOC(0xff));
+	set(s, REG_A5XX_PC_CLIP_CNTL, 0);
+	if (fs_instrlen) {
+		emit_shader(s, SB4_FS_SHADER, r->fs_code, fs_instrlen);
+	}
+	pkt4(s, REG_A5XX_VFD_CONTROL_1, 5);
+	out(s, A5XX_VFD_CONTROL_1_REGID4VTX(vs->vertex_id_regid) | A5XX_VFD_CONTROL_1_REGID4INST(vs->instance_id_regid) | 0xfc0000);
+	out(s, 0x0000fcfc);
+	out(s, 0x0000fcfc);
+	out(s, 0x000000fc);
+	out(s, 0);
+
+	/* rasterizer: the cull and the winding; Metal's front face is clockwise unless the encoder says otherwise */
+	set(s, REG_A5XX_GRAS_SU_CNTL, A5XX_GRAS_SU_CNTL_LINEHALFWIDTH(0.5f) | A5XX_GRAS_SU_CNTL_LINE_MODE(BRESENHAM) |
+	    COND(r->cull & 1, A5XX_GRAS_SU_CNTL_CULL_FRONT) | COND(r->cull & 2, A5XX_GRAS_SU_CNTL_CULL_BACK) |
+	    COND(r->front_cw, A5XX_GRAS_SU_CNTL_FRONT_CW));
+	pkt4(s, REG_A5XX_GRAS_SU_POINT_MINMAX, 2);
+	out(s, A5XX_GRAS_SU_POINT_MINMAX_MIN(1.0f) | A5XX_GRAS_SU_POINT_MINMAX_MAX(1.0f));
+	out(s, A5XX_GRAS_SU_POINT_SIZE(1.0f));
+	zeros(s, REG_A5XX_GRAS_SU_POLY_OFFSET_SCALE, 3);
+	set(s, REG_A5XX_PC_RASTER_CNTL, 0);
+	set(s, REG_A5XX_GRAS_CL_CNTL, A5XX_GRAS_CL_CNTL_ZERO_GB_SCALE_Z);
+	set(s, REG_A5XX_PC_PRIMITIVE_CNTL, A5XX_PC_PRIMITIVE_CNTL_PROVOKING_VTX_LAST | A5XX_PC_PRIMITIVE_CNTL_STRIDE_IN_VPC(l->max_loc));
+	set(s, REG_A5XX_RB_FS_OUTPUT_CNTL, A5XX_RB_FS_OUTPUT_CNTL_MRT(1));
+	set(s, REG_A5XX_SP_FS_OUTPUT_CNTL, A5XX_SP_FS_OUTPUT_CNTL_MRT(1) | A5XX_SP_FS_OUTPUT_CNTL_DEPTH_REGID(NOREG) |
+	    A5XX_SP_FS_OUTPUT_CNTL_SAMPLEMASK_REGID(NOREG));
+
+	/* constants of both stages; the vertex stage's driver params are {draw id, vertex offset, first instance, 0, indexed} */
+	{
+		uint32_t dp[8] = { 0, r->first, r->base_instance, 0, 0, 0, 0, 0 };
+
+		if ((e = emit_stage_consts(s, SB4_VS_SHADER, &vs->k, r->vs_buf, dp, 8)) != NULL ||
+		    (e = emit_stage_consts(s, SB4_FS_SHADER, &fs->k, r->fs_buf, NULL, 0)) != NULL) {
+			*why = e;
+			return 0;
+		}
+	}
+
+	/* blend off, colour write mask 0xf */
+	for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
+		set(s, REG_A5XX_RB_MRT_CONTROL(i), A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(i == 0 ? 0xf : 0));
+		set(s, REG_A5XX_RB_MRT_BLEND_CONTROL(i),
+		    A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(FACTOR_ZERO) |
+		    A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(FACTOR_ZERO));
+	}
+	set(s, REG_A5XX_SP_BLEND_CNTL, A5XX_SP_BLEND_CNTL_UNK8);
+	set(s, REG_A5XX_RB_BLEND_CNTL, A5XX_RB_BLEND_CNTL_SAMPLE_MASK(0xffff));
+	set(s, REG_A5XX_TPL1_FS_TEX_COUNT, 0);
+	set(s, REG_A5XX_TPL1_CS_TEX_COUNT, 0);
+
+	/* vertex buffers: one fetch and one decode per attribute (fd5_emit_vertex_bufs) */
+	for (i = 0; i < r->nattr; i++) {
+		const struct lav5_attr * a = &r->attr[i];
+		const struct lav5_vbuf * vb = &r->vbuf[a->buffer];
+		uint64_t base = vb->gpu + a->offset;
+		const struct lav5_io * in = NULL;
+
+		for (j = 0; j < vs->nin; j++) {
+			if (!vs->in[j].sysval && vs->in[j].compmask && vs->in[j].slot == a->index + 15) { /* VERT_ATTRIB_GENERIC0 is 15 */
+				in = &vs->in[j];
+			}
+		}
+		if (in == NULL) {
+			continue;               /* an attribute the vertex stage does not read */
+		}
+		pkt4(s, REG_A5XX_VFD_FETCH(nvtx), 4);
+		out(s, (uint32_t)base);
+		out(s, (uint32_t)(base >> 32));
+		out(s, (uint32_t)(vb->bytes - a->offset));
+		out(s, vb->stride);
+		pkt4(s, REG_A5XX_VFD_DECODE(nvtx), 2);
+		out(s, A5XX_VFD_DECODE_INSTR_IDX(nvtx) | A5XX_VFD_DECODE_INSTR_FORMAT(a->format) | A5XX_VFD_DECODE_INSTR_SWAP(a->swap) |
+		    A5XX_VFD_DECODE_INSTR_UNK30 | COND(a->is_float, A5XX_VFD_DECODE_INSTR_FLOAT));
+		out(s, 1);
+		set(s, REG_A5XX_VFD_DEST_CNTL(nvtx), A5XX_VFD_DEST_CNTL_INSTR_WRITEMASK(in->compmask) | A5XX_VFD_DEST_CNTL_INSTR_REGID(in->regid));
+		nvtx++;
+	}
+	set(s, REG_A5XX_VFD_CONTROL_0, A5XX_VFD_CONTROL_0_VTXCNT(nvtx));
+
+	pkt4(s, REG_A5XX_VFD_INDEX_OFFSET, 2);
+	out(s, r->first);
+	out(s, r->base_instance);
+	set(s, REG_A5XX_PC_RESTART_INDEX, 0xffffffff);
+	set(s, REG_A5XX_RB_RENDER_CNTL, 0x8);
+	set(s, REG_A5XX_GRAS_SC_CNTL, 0x8);
+
+	/* the draw */
+	pkt7(s, CP_DRAW_INDX_OFFSET, 3);
+	out(s, CP_DRAW_INDX_OFFSET_0_PRIM_TYPE(r->prim) | CP_DRAW_INDX_OFFSET_0_SOURCE_SELECT(DI_SRC_SEL_AUTO_INDEX) |
+	    CP_DRAW_INDX_OFFSET_0_INDEX_SIZE(INDEX4_SIZE_32_BIT) | CP_DRAW_INDX_OFFSET_0_VIS_CULL(IGNORE_VISIBILITY));
+	out(s, r->instances);
+	out(s, r->count);
+
+	/* fd5_emit_sysmem_fini, then the flush with a timestamp so that memory holds the pixels */
+	pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
+	out(s, 0);
+	wfi(s);
+	pkt7(s, CP_EVENT_WRITE, 4);
+	out(s, PC_CCU_FLUSH_COLOR_TS);
+	out(s, (uint32_t)r->flush_gpu);
+	out(s, (uint32_t)(r->flush_gpu >> 32));
+	out(s, 0xc0c0c0c0);
+	wfi(s);
+	pkt7(s, CP_EVENT_WRITE, 1);
+	out(s, CACHE_FLUSH);
+	wfi(s);
+	pkt7(s, CP_EVENT_WRITE, 4);
+	out(s, CACHE_FLUSH_TS);
+	out(s, (uint32_t)(r->flush_gpu + 4));
+	out(s, (uint32_t)((r->flush_gpu + 4) >> 32));
+	out(s, 0xa4a4a4a4);
+	pkt7(s, CP_WAIT_MEM_WRITES, 0);
+	wfi(s);
+
+	if (s->over) {
+		*why = "the stream is longer than the service takes";
+		return 0;
+	}
+	return s->n;
+}

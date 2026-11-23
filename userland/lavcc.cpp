@@ -113,3 +113,121 @@ extern "C" void lavcc_kernel_free(struct lav5_kernel* k)
     k->words = nullptr;
     k->imm = nullptr;
 }
+
+// ---- the 3D side: a vertex and a fragment function compiled, linked and flattened for lava5r.c ----
+
+static void flatten(const Kernel& c, const std::vector<Resource>& resources, struct lav5_kernel* out)
+{
+    memset(out, 0, sizeof *out);
+    out->nwords = c.numWords;
+    out->words = static_cast<uint32_t*>(malloc(c.numWords * 4));
+    memcpy(out->words, c.words, c.numWords * 4);
+    out->instrlen = c.instrlen;
+    out->constlen = c.constlen;
+    out->max_reg = c.maxReg;
+    out->max_half_reg = c.maxHalfReg;
+    out->double_threadsize = c.doubleThreadsize;
+    out->branchstack = c.branchstackHw;
+    out->nimm = c.numImmediates;
+    if (c.numImmediates) {
+        out->imm = static_cast<uint32_t*>(malloc(c.numImmediates * 4));
+        memcpy(out->imm, c.immediates, c.numImmediates * 4);
+    }
+    out->imm_vec4 = c.immediatesOffsetVec4;
+    out->dp_vec4 = c.driverParamsOffsetVec4;
+    out->num_ubos = c.numUbos;
+    out->num_ssbos = c.numSsbos;
+    out->num_ibos = c.numIbos;
+    out->shared_size = c.sharedSize;
+    out->pvtmem_size = c.pvtmemSize;
+    out->const_data_size = c.constantDataSize;
+    out->nranges = c.numUboRanges < LAV5_MAX_RANGES ? c.numUboRanges : LAV5_MAX_RANGES;
+    for (uint32_t i = 0; i < out->nranges; i++)
+        out->ranges[i] = { c.uboRanges[i].block, c.uboRanges[i].offsetVec4, c.uboRanges[i].startDword, c.uboRanges[i].sizeDwords };
+    for (const auto& r : resources) {
+        if ((r.kind == Resource::kConstantBuffer || r.kind == Resource::kDeviceBuffer) && r.index < LAV5_MAX_BUFFERS)
+            out->buffer_mask |= 1u << r.index;
+        else
+            out->other_resources++;
+    }
+}
+
+static void flatten_stage(const Stage& s, const std::vector<Resource>& resources, struct lav5_stage* out)
+{
+    flatten(s.k, resources, &out->k);
+    out->is_fragment = s.kind == kStageFragment;
+    out->nin = s.numInputs < LAV5_MAX_IO ? s.numInputs : LAV5_MAX_IO;
+    for (uint32_t i = 0; i < out->nin; i++)
+        out->in[i] = { s.inputs[i].slot, s.inputs[i].regid, s.inputs[i].compmask, s.inputs[i].inloc, s.inputs[i].sysval,
+                       s.inputs[i].bary, s.inputs[i].flat, s.inputs[i].half };
+    out->nout = s.numOutputs < 32 ? s.numOutputs : 32;
+    for (uint32_t i = 0; i < out->nout; i++) {
+        out->out[i].slot = s.outputs[i].slot;
+        out->out[i].regid = s.outputs[i].regid;
+        out->out[i].half = s.outputs[i].half;
+    }
+    out->nattr = s.numAttributes;
+    out->vertex_id_regid = s.vertexIdRegid;
+    out->instance_id_regid = s.instanceIdRegid;
+    out->position_regid = s.positionRegid;
+    out->point_size_regid = s.pointSizeRegid;
+    out->clip_mask = s.clipMask;
+    out->cull_mask = s.cullMask;
+    out->total_in = s.totalIn;
+    out->frag_coord_regid = s.fragCoordRegid;
+    out->face_regid = s.faceRegid;
+    out->frag_coord_compmask = s.fragcoordCompmask;
+    for (uint32_t i = 0; i < 7; i++) out->ij_regid[i] = s.ijRegid[i];
+    for (uint32_t i = 0; i < 8; i++) {
+        out->color_regid[i] = s.colorRegid[i];
+        out->color_half[i] = s.colorHalf[i];
+    }
+    out->ncolor = s.numColorOutputs;
+    out->depth_regid = s.depthRegid;
+    out->need_pixlod = s.needPixlod;
+    out->has_kill = s.hasKill;
+    out->writes_pos = s.writesPos;
+}
+
+static std::unique_ptr<CompiledStage> stage_of(struct lavcc_lib* l, const char* name, uint8_t type, std::string* why)
+{
+    const MetalFunction* fn = l->lib.find(name);
+    if (!fn) { *why = std::string("no function ") + name; return nullptr; }
+    if (fn->type != type) { *why = std::string(name) + " is not the right kind of function"; return nullptr; }
+    const uint8_t* bc = nullptr;
+    uint64_t n = 0;
+    if (!l->lib.bitcode(*fn, &bc, &n)) { *why = std::string("no bitcode for ") + name; return nullptr; }
+    return compileStage(bc, n, why);
+}
+
+extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, struct lavcc_lib* lf, const char* fname,
+                                     struct lav5_stage* vs, struct lav5_stage* fs, struct lav5_link* link, char* why, size_t whysize)
+{
+    std::string w;
+    auto v = stage_of(lv, vname, MetalFunction::kVertex, &w);
+    if (!v) { snprintf(why, whysize, "vertex function: %s", w.c_str()); return 0; }
+    auto f = stage_of(lf, fname, MetalFunction::kFragment, &w);
+    if (!f) { snprintf(why, whysize, "fragment function: %s", w.c_str()); return 0; }
+    Linkage lk{};
+    if (!render::link(v->stage, f->stage, &lk, &w)) { snprintf(why, whysize, "link: %s", w.c_str()); return 0; }
+    memset(vs, 0, sizeof *vs);
+    memset(fs, 0, sizeof *fs);
+    memset(link, 0, sizeof *link);
+    flatten_stage(v->stage, v->resources, vs);
+    flatten_stage(f->stage, f->resources, fs);
+    link->cnt = lk.cnt;
+    link->max_loc = lk.maxLoc;
+    link->position_loc = lk.positionLoc;
+    link->psize_loc = lk.psizeLoc;
+    for (int i = 0; i < 4; i++) link->varmask[i] = lk.varmask[i];
+    for (int i = 0; i < 8; i++) link->interp[i] = lk.interpMode[i];
+    for (uint32_t i = 0; i < 32; i++) {
+        link->var[i].slot = lk.var[i].slot;
+        link->var[i].regid = lk.var[i].regid;
+        link->var[i].compmask = lk.var[i].compmask;
+        link->var[i].loc = lk.var[i].loc;
+    }
+    return 1;
+}
+
+extern "C" void lavcc_stage_free(struct lav5_stage* s) { lavcc_kernel_free(&s->k); }

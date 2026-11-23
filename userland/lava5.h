@@ -64,6 +64,76 @@ struct lav5_dispatch {
 	uint64_t hole_gpu;                              /* memory nobody names, for an SSBO slot nothing is bound at */
 };
 
+/* ---- the 3D side (lava5r.c): a vertex and a fragment stage, their link, and one pass of draws ---- */
+
+#define LAV5_MAX_IO 34
+
+struct lav5_io {
+	uint8_t slot, regid, compmask, inloc, sysval, bary, flat, half;
+};
+
+struct lav5_stage {
+	struct lav5_kernel k;       /* the code, constants, footprints (the compute-only fields are zero) */
+	uint32_t is_fragment;
+	uint32_t nin;
+	struct lav5_io in[LAV5_MAX_IO];
+	uint32_t nout;
+	struct { uint8_t slot, regid, half, pad; } out[32];
+	/* vertex */
+	uint32_t nattr;             /* inputs that are not system values */
+	uint32_t vertex_id_regid, instance_id_regid, position_regid, point_size_regid;
+	uint32_t clip_mask, cull_mask;
+	/* fragment */
+	uint32_t total_in, frag_coord_regid, face_regid;
+	uint32_t frag_coord_compmask;
+	uint32_t ij_regid[7];       /* ir3's order: persp pixel, sample, centroid, centre rhw, linear pixel, centroid, sample */
+	uint32_t color_regid[8];
+	uint32_t color_half[8];
+	uint32_t ncolor;
+	uint32_t depth_regid;
+	uint32_t need_pixlod, has_kill, writes_pos;
+};
+
+struct lav5_link {
+	struct { uint8_t slot, regid, compmask, loc; } var[32];
+	uint32_t cnt, max_loc, varmask[4], position_loc, interp[8], psize_loc;
+};
+
+/* a vertex attribute: Metal's [[attribute(index)]] read from vertex buffer `buffer` at `offset` as `format` (an a5xx
+ * a5xx_vtx_fmt) */
+struct lav5_attr {
+	uint32_t index, format, offset, buffer;
+	uint32_t is_float, swap;
+};
+
+struct lav5_vbuf {
+	uint64_t gpu, bytes;
+	uint32_t stride;
+};
+
+struct lav5_render {
+	const struct lav5_stage * vs, * fs;
+	const struct lav5_link * link;
+	uint64_t vs_code, fs_code;
+	uint64_t rt_gpu;
+	uint32_t rt_width, rt_height, rt_pitch;     /* pixels, pixels, bytes */
+	uint32_t rt_format;                         /* 0: BGRA8 unorm (Metal's bgra8Unorm), 1: RGBA8 unorm */
+	uint32_t nattr;
+	struct lav5_attr attr[16];
+	struct lav5_vbuf vbuf[LAV5_MAX_BUFFERS];
+	struct lav5_binding vs_buf[LAV5_MAX_BUFFERS], fs_buf[LAV5_MAX_BUFFERS];
+	uint32_t prim;                              /* a5xx pc_di_primtype */
+	uint32_t first, count, instances, base_instance;
+	float viewport[6];                          /* x, y, width, height, znear, zfar (Metal's, top-left origin) */
+	uint32_t scissor[4];                        /* x, y, width, height */
+	uint32_t cull;                              /* 0 none, 1 front, 2 back */
+	uint32_t front_cw;
+	uint64_t flush_gpu;
+};
+
+/* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */
+size_t lav5_build_render(uint32_t * out, size_t cap, const struct lav5_render * r, const char ** why);
+
 /* the words of the stream; returns how many, 0 with *why set (a string literal) when the dispatch is refused */
 size_t lav5_build(uint32_t * out, size_t cap, const struct lav5_dispatch * d, const char ** why);
 
