@@ -1034,6 +1034,8 @@ bindStage(struct lav5_binding * out, struct lav5_vbuf * vb, id * bufs, uint64_t 
 	return YES;
 }
 
+static struct lbuf gPvt[2];     /* private memory of the vertex and the fragment stage, grown on demand */
+
 static BOOL
 runDraw(struct op * op)
 {
@@ -1055,6 +1057,29 @@ runDraw(struct op * op)
 	r->fs = &rp->fs;
 	r->link = &rp->link;
 	r->vs_code = rp->vcode.gpu;
+	for (int i = 0; i < 2; i++) {
+		const struct lav5_stage * st = i == 0 ? &rp->vs : &rp->fs;
+		uint32_t bytes = lav5_pvtmem_bytes(st);
+
+		if (bytes == 0) {
+			continue;
+		}
+		if (bytes > gPvt[i].len) {
+			struct lbuf nb;
+
+			if (!lavBufNew(bytes, &nb)) {
+				lavlog("draw of %s: no memory for %u bytes of private memory", name, bytes);
+				free(r);
+				return NO;
+			}
+			gPvt[i] = nb;
+		}
+		if (i == 0) {
+			r->vs_pvt_gpu = gPvt[i].gpu;
+		} else {
+			r->fs_pvt_gpu = gPvt[i].gpu;
+		}
+	}
 	r->fs_code = rp->fcode.gpu;
 	r->rt_gpu = t->b.gpu;
 	r->rt_width = t->width;

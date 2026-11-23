@@ -152,6 +152,7 @@ struct lav5_render {
 	struct lav5_binding vs_buf[LAV5_MAX_BUFFERS], fs_buf[LAV5_MAX_BUFFERS];
 	uint32_t prim;                              /* a5xx pc_di_primtype */
 	uint32_t first, count, instances, base_instance;
+	uint64_t vs_pvt_gpu, fs_pvt_gpu;            /* private memory of each stage (lav5_pvtmem_bytes of it), 0 when it has none */
 	uint64_t index_gpu;                         /* 0: not indexed; else the first index */
 	uint32_t index_size;                        /* 1: 16-bit, 2: 32-bit (a4xx_index_size) */
 	uint32_t index_max;                         /* indices from index_gpu to the end of the buffer */
@@ -173,6 +174,9 @@ struct lav5_render {
 /* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */
 /* why one stage cannot be drawn with, or NULL (checked again by lav5_build_render) */
 const char * lav5_refuse_stage(const struct lav5_stage * s);
+
+/* bytes of private memory the stage needs for all its fibers (0: none); a5xx has no figure for fibers per SP, so this is generous */
+uint32_t lav5_pvtmem_bytes(const struct lav5_stage * s);
 
 size_t lav5_build_render(uint32_t * out, size_t cap, const struct lav5_render * r, const char ** why);
 

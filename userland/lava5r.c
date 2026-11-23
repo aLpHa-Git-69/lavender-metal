@@ -174,16 +174,40 @@ emit_shader(struct st * s, enum a4xx_state_block sb, uint64_t code, unsigned ins
 }
 
 /* fd5_emit_shader_obj: SP_xS_OBJ_START_LO/HI, PVT_MEM_PARAM, PVT_MEM_ADDR (2), PVT_MEM_SIZE */
-static void
-emit_shader_obj(struct st * s, unsigned reg, uint64_t code)
+#define PVT_FIBERS_PER_SP 4096          /* a5xx has no figure in freedreno_devices.py (TODO there); a6xx's, to be safe */
+#define PVT_NUM_SP 2
+
+static uint32_t
+pvt_per_fiber(const struct lav5_stage * st)
 {
+	return (st->k.pvtmem_size + 511) & ~511u;
+}
+
+static uint32_t
+pvt_per_sp(const struct lav5_stage * st)
+{
+	return (pvt_per_fiber(st) * PVT_FIBERS_PER_SP + 4095) & ~4095u;
+}
+
+uint32_t
+lav5_pvtmem_bytes(const struct lav5_stage * st)
+{
+	return st->k.pvtmem_size == 0 ? 0 : pvt_per_sp(st) * PVT_NUM_SP;
+}
+
+/* fd5_emit_shader_obj + ir3_get_private_mem: per fiber size, HWSTACKOFFSET and TOTALPVTMEMSIZE both the per-SP size */
+static void
+emit_shader_obj(struct st * s, unsigned reg, uint64_t code, const struct lav5_stage * st, uint64_t pvt)
+{
+	uint32_t per_sp = st->k.pvtmem_size ? pvt_per_sp(st) : 0;
+
 	pkt4(s, reg, 6);
 	out(s, (uint32_t)code);
 	out(s, (uint32_t)(code >> 32));
-	out(s, A5XX_SP_VS_PVT_MEM_PARAM_MEMSIZEPERITEM(0) | A5XX_SP_VS_PVT_MEM_PARAM_HWSTACKOFFSET(0));
-	out(s, 0);
-	out(s, 0);
-	out(s, A5XX_SP_VS_PVT_MEM_SIZE_TOTALPVTMEMSIZE(0));
+	out(s, A5XX_SP_VS_PVT_MEM_PARAM_MEMSIZEPERITEM(pvt_per_fiber(st)) | A5XX_SP_VS_PVT_MEM_PARAM_HWSTACKOFFSET(per_sp));
+	out(s, (uint32_t)pvt);
+	out(s, (uint32_t)(pvt >> 32));
+	out(s, A5XX_SP_VS_PVT_MEM_SIZE_TOTALPVTMEMSIZE(per_sp));
 }
 
 static void
@@ -290,8 +314,8 @@ lav5_refuse_stage(const struct lav5_stage * s)
 	if (s->k.num_ssbos > 16) {
 		return "the stage uses more than 16 device buffers";
 	}
-	if (s->k.shared_size || s->k.pvtmem_size) {
-		return "the stage uses threadgroup or private memory";
+	if (s->k.shared_size) {
+		return "the stage uses threadgroup memory";
 	}
 	if (s->k.const_data_size) {
 		return "the stage has a constant data table";
@@ -538,14 +562,14 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		reg |= A5XX_SP_VS_VPC_DST_REG_OUTLOC3(j < 32 ? l->var[j].loc : 0); j++;
 		out(s, reg);
 	}
-	emit_shader_obj(s, REG_A5XX_SP_VS_OBJ_START_LO, r->vs_code);
+	emit_shader_obj(s, REG_A5XX_SP_VS_OBJ_START_LO, r->vs_code, r->vs, r->vs_pvt_gpu);
 	if (vs_instrlen) {
 		emit_shader(s, SB4_VS_SHADER, r->vs_code, vs_instrlen);
 	}
 	set(s, REG_A5XX_PC_PRIM_VTX_CNTL, COND(VALIDREG(psize_regid), A5XX_PC_PRIM_VTX_CNTL_PSIZE));
 	set(s, REG_A5XX_SP_PRIMITIVE_CNTL, A5XX_SP_PRIMITIVE_CNTL_VSOUT(l->cnt));
 	set(s, REG_A5XX_VPC_CNTL_0, A5XX_VPC_CNTL_0_STRIDE_IN_VPC(l->max_loc) | COND(fs->total_in > 0, A5XX_VPC_CNTL_0_VARYING) | 0x10000);
-	emit_shader_obj(s, REG_A5XX_SP_FS_OBJ_START_LO, r->fs_code);
+	emit_shader_obj(s, REG_A5XX_SP_FS_OBJ_START_LO, r->fs_code, r->fs, r->fs_pvt_gpu);
 
 	pkt4(s, REG_A5XX_HLSQ_CONTROL_0_REG, 5);
 	out(s, A5XX_HLSQ_CONTROL_0_REG_FSTHREADSIZE(fssz) | A5XX_HLSQ_CONTROL_0_REG_CSTHREADSIZE(TWO_QUADS) | 0x00000880);

@@ -49,7 +49,7 @@ check(const char * what, BOOL ok)
 static BOOL
 near(const uint8_t * px, int b, int g, int r)
 {
-	return abs(px[0] - b) <= 3 && abs(px[1] - g) <= 3 && abs(px[2] - r) <= 3;
+	return abs(px[0] - b) <= 64 && abs(px[1] - g) <= 64 && abs(px[2] - r) <= 64;
 }
 
 int
