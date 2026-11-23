@@ -596,6 +596,7 @@ struct dispatch {
 struct draw {
 	id pipeline;                            /* retained */
 	id target;                              /* retained texture */
+	id xtarget[8];                          /* retained: colour targets 1.. */
 	id vbuf[LAV5_MAX_BUFFERS];              /* retained: setVertexBuffer: */
 	uint64_t voff[LAV5_MAX_BUFFERS];
 	uint8_t * vbytes[LAV5_MAX_BUFFERS];     /* setVertexBytes:, a copy */
@@ -689,6 +690,9 @@ cbFreeOps(struct cbstate * st)
 
 			[w->pipeline release];
 			[w->target release];
+			for (int j = 1; j < 8; j++) {
+				[w->xtarget[j] release];
+			}
 			for (int j = 0; j < 16; j++) {
 				[w->ftex[j] release];
 				[w->fsamp[j] release];

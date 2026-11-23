@@ -93,3 +93,19 @@ vertex TriOut ssbo_vs(uint vid [[vertex_id]], const device float4 * verts [[buff
 	o.color = verts[vid + 3];
 	return o;
 }
+
+// ---- multiple render targets (M5.6): what CoreAnimation's *_shading_frag and path_*_frag functions write ----
+struct MrtOut {
+	float4 c0 [[color(0)]];
+	float4 c1 [[color(1)]];
+	float4 c2 [[color(2)]];
+};
+
+fragment MrtOut mrt_fs(TexOut in [[stage_in]])
+{
+	MrtOut o;
+	o.c0 = float4(1.0, 0.0, 0.0, 1.0);
+	o.c1 = float4(0.0, 1.0, 0.0, 1.0);
+	o.c2 = float4(in.uv.x, in.uv.y, 1.0, 1.0);
+	return o;
+}

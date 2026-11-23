@@ -187,3 +187,12 @@ advertise SSBOs for the VS ("one state block shared by VS/HS/DS/GS/FS", simplifi
 (`ssbo_vs` reading positions and colours from a `device float4 *`) PASSED on the phone, 1352 pixels, same corners. docs/m56c-phone-ssbo-vs.txt.
 This clears the 32 vertex functions of QuartzCore's path_* and fixed_vert_* families (they still need MRT in their fragment
 partners, and the 4 fixed_vert_* with point size/clip). Next: MRT.
+
+## M5.6 (d) done (2026-11-23): multiple render targets (MRT)
+
+lava5r.c now serves fragment stages that write 0..8 colours: per-target RB_MRT_BUF_INFO/pitch/address (swap per format),
+SP_FS_MRT_REG, SP_FS_OUTPUT_REG only for written targets, RB/SP_FS_OUTPUT_CNTL.MRT(nrt) with nrt = attachments of the pass,
+per-target blend (INDEPENDENT_BLEND when nrt > 1) and RB_RENDER_COMPONENTS RT0..RT(nrt-1) (without it only target 0 is written).
+The plug-in takes colour attachments 0..7 (same-size textures of this driver; a clear per attachment) and blend/write mask per
+attachment from the pipeline descriptor. lavmetal_test stage 18 (`mrt_fs`: red, green, uv into three targets) PASSED on the phone.
+docs/m56d-phone-mrt.txt. Clears the 34 MRT fragment functions of QuartzCore. Next: point size / clip distances (4 fixed_vert_*).

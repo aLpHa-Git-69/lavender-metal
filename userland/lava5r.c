@@ -268,8 +268,8 @@ lav5_refuse_stage(const struct lav5_stage * s)
 		if (!VALIDREG(s->position_regid)) {
 			return "the vertex stage writes no position";
 		}
-	} else if (s->ncolor != 1) {
-		return "the fragment stage does not write exactly one colour";
+	} else if (s->ncolor > 8) {
+		return "the fragment stage writes more than 8 colours";
 	}
 	if (s->k.num_ssbos > 16) {
 		return "the stage uses more than 16 device buffers";
@@ -301,6 +301,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	uint32_t color_fmt = r->rt_format == 1 ? RB5_R8G8B8A8_UNORM : RB5_R8G8B8A8_UNORM;
 	enum a3xx_color_swap swap = r->rt_format == 1 ? WZYX : WXYZ;
 	int32_t vp_x, vp_y;
+	unsigned nrt = r->nrt ? r->nrt : 1;
 
 	*why = NULL;
 	if (vs->nattr != r->nattr) {
@@ -313,10 +314,6 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	}
 	if (!VALIDREG(pos_regid)) {
 		*why = "the vertex stage writes no position";
-		return 0;
-	}
-	if (fs->ncolor != 1) {
-		*why = "the fragment stage must write exactly one colour";
 		return 0;
 	}
 	if ((e = lav5_refuse_stage(vs)) != NULL || (e = lav5_refuse_stage(fs)) != NULL) {
@@ -365,16 +362,20 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	zeros(s, REG_A5XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
 	set(s, REG_A5XX_RB_STENCIL_INFO, 0);
 
-	/* emit_mrt: colour target 0, the others empty */
+	/* emit_mrt: the colour targets of the pass, the others empty */
 	for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
 		pkt4(s, REG_A5XX_RB_MRT_BUF_INFO(i), 5);
-		if (i == 0) {
+		if (i < nrt) {
+			uint64_t gpu = i == 0 ? r->rt_gpu : r->rt[i].gpu;
+			uint32_t pitch = i == 0 ? r->rt_pitch : r->rt[i].pitch;
+			enum a3xx_color_swap sw = (i == 0 ? r->rt_format : r->rt[i].format) == 1 ? WZYX : WXYZ;
+
 			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(color_fmt) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
-			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(swap));
-			out(s, A5XX_RB_MRT_PITCH(r->rt_pitch));
-			out(s, A5XX_RB_MRT_ARRAY_PITCH(r->rt_pitch * r->rt_height));
-			out(s, (uint32_t)r->rt_gpu);
-			out(s, (uint32_t)(r->rt_gpu >> 32));
+			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(sw));
+			out(s, A5XX_RB_MRT_PITCH(pitch));
+			out(s, A5XX_RB_MRT_ARRAY_PITCH(pitch * r->rt_height));
+			out(s, (uint32_t)gpu);
+			out(s, (uint32_t)(gpu >> 32));
 		} else {
 			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(0) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
 			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX));
@@ -383,7 +384,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, 0);
 			out(s, 0);
 		}
-		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(i == 0 ? color_fmt : 0));
+		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(i < nrt ? color_fmt : 0));
 		zeros(s, REG_A5XX_RB_MRT_FLAG_BUFFER(i), 4);
 	}
 	/* emit_msaa: one sample */
@@ -398,7 +399,11 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	out(s, A5XX_GRAS_SC_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_GRAS_SC_DEST_MSAA_CNTL_MSAA_DISABLE);
 
 	/* ---- fd5_emit_state ---- */
-	set(s, REG_A5XX_RB_RENDER_COMPONENTS, A5XX_RB_RENDER_COMPONENTS_RT0(0xf));
+	set(s, REG_A5XX_RB_RENDER_COMPONENTS, A5XX_RB_RENDER_COMPONENTS_RT0(0xf) |
+	    COND(nrt > 1, A5XX_RB_RENDER_COMPONENTS_RT1(0xf)) | COND(nrt > 2, A5XX_RB_RENDER_COMPONENTS_RT2(0xf)) |
+	    COND(nrt > 3, A5XX_RB_RENDER_COMPONENTS_RT3(0xf)) | COND(nrt > 4, A5XX_RB_RENDER_COMPONENTS_RT4(0xf)) |
+	    COND(nrt > 5, A5XX_RB_RENDER_COMPONENTS_RT5(0xf)) | COND(nrt > 6, A5XX_RB_RENDER_COMPONENTS_RT6(0xf)) |
+	    COND(nrt > 7, A5XX_RB_RENDER_COMPONENTS_RT7(0xf)));
 	set(s, REG_A5XX_RB_ALPHA_CONTROL, 0);
 	set(s, REG_A5XX_RB_STENCIL_CONTROL, 0);
 	set(s, REG_A5XX_GRAS_LRZ_CNTL, 0);
@@ -545,9 +550,9 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 
 	pkt4(s, REG_A5XX_SP_FS_OUTPUT_REG(0), 8);
 	for (i = 0; i < 8; i++) {
-		uint32_t rid = i < fs->ncolor ? fs->color_regid[i] : NOREG;
+		uint32_t rid = i < fs->ncolor && i < nrt ? fs->color_regid[i] : NOREG;
 
-		out(s, A5XX_SP_FS_OUTPUT_REG_REGID(rid) | COND(i < fs->ncolor && fs->color_half[i], A5XX_SP_FS_OUTPUT_REG_HALF_PRECISION));
+		out(s, A5XX_SP_FS_OUTPUT_REG_REGID(rid) | COND(i < fs->ncolor && i < nrt && fs->color_half[i], A5XX_SP_FS_OUTPUT_REG_HALF_PRECISION));
 	}
 	set(s, REG_A5XX_VPC_PACK, A5XX_VPC_PACK_NUMNONPOSVAR(fs->total_in) | A5XX_VPC_PACK_PSIZELOC(psize_loc));
 	pkt4(s, REG_A5XX_VPC_VARYING_INTERP_MODE(0), 8);
@@ -579,8 +584,8 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	set(s, REG_A5XX_PC_RASTER_CNTL, 0);
 	set(s, REG_A5XX_GRAS_CL_CNTL, A5XX_GRAS_CL_CNTL_ZERO_GB_SCALE_Z);
 	set(s, REG_A5XX_PC_PRIMITIVE_CNTL, A5XX_PC_PRIMITIVE_CNTL_PROVOKING_VTX_LAST | A5XX_PC_PRIMITIVE_CNTL_STRIDE_IN_VPC(l->max_loc));
-	set(s, REG_A5XX_RB_FS_OUTPUT_CNTL, A5XX_RB_FS_OUTPUT_CNTL_MRT(1));
-	set(s, REG_A5XX_SP_FS_OUTPUT_CNTL, A5XX_SP_FS_OUTPUT_CNTL_MRT(1) | A5XX_SP_FS_OUTPUT_CNTL_DEPTH_REGID(NOREG) |
+	set(s, REG_A5XX_RB_FS_OUTPUT_CNTL, A5XX_RB_FS_OUTPUT_CNTL_MRT(nrt));
+	set(s, REG_A5XX_SP_FS_OUTPUT_CNTL, A5XX_SP_FS_OUTPUT_CNTL_MRT(nrt) | A5XX_SP_FS_OUTPUT_CNTL_DEPTH_REGID(NOREG) |
 	    A5XX_SP_FS_OUTPUT_CNTL_SAMPLEMASK_REGID(NOREG));
 
 	/* constants of both stages; the vertex stage's driver params are {draw id, vertex offset, first instance, 0, indexed} */
@@ -628,15 +633,21 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 
 	/* blend (fd5_blend_state_create): target 0 as the pipeline says, the others off */
 	{
-		const struct lav5_blend * b = &r->blend;
-		uint32_t mask = b->enable ? 1 : 0;
+		const struct lav5_blend * b0 = &r->blend;
+		uint32_t mask = 0;
 
+		for (i = 0; i < nrt; i++) {
+			if ((i == 0 ? r->blend : r->blend_x[i]).enable) {
+				mask |= 1u << i;
+			}
+		}
 		for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
-			uint32_t ctl = A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(i == 0 ? b->writemask : 0);
+			const struct lav5_blend * b = i == 0 ? b0 : &r->blend_x[i];
+			uint32_t ctl = A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(i < nrt ? b->writemask : 0);
 			uint32_t bc = A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(FACTOR_ZERO) |
 			    A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(FACTOR_ZERO);
 
-			if (i == 0 && b->enable) {
+			if (i < nrt && b->enable) {
 				ctl |= A5XX_RB_MRT_CONTROL_BLEND | A5XX_RB_MRT_CONTROL_BLEND2;
 				bc = A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(b->rgb_src) | A5XX_RB_MRT_BLEND_CONTROL_RGB_BLEND_OPCODE(b->rgb_op) |
 				    A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(b->rgb_dst) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(b->a_src) |
@@ -646,8 +657,9 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			set(s, REG_A5XX_RB_MRT_BLEND_CONTROL(i), bc);
 		}
 		set(s, REG_A5XX_SP_BLEND_CNTL, A5XX_SP_BLEND_CNTL_ENABLE_BLEND(mask) | A5XX_SP_BLEND_CNTL_UNK8);
-		set(s, REG_A5XX_RB_BLEND_CNTL, A5XX_RB_BLEND_CNTL_ENABLE_BLEND(mask) | A5XX_RB_BLEND_CNTL_SAMPLE_MASK(0xffff));
-		if (b->enable) {
+		set(s, REG_A5XX_RB_BLEND_CNTL, A5XX_RB_BLEND_CNTL_ENABLE_BLEND(mask) | A5XX_RB_BLEND_CNTL_SAMPLE_MASK(0xffff) |
+		    COND(nrt > 1, A5XX_RB_BLEND_CNTL_INDEPENDENT_BLEND));
+		if (mask) {
 			/* the constant blend colour (fd5_emit_state, FD_DIRTY_BLEND_COLOR) */
 			pkt4(s, REG_A5XX_RB_BLEND_RED, 8);
 			for (i = 0; i < 4; i++) {

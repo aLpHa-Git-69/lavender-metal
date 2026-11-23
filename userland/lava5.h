@@ -131,6 +131,14 @@ struct lav5_blend {
 	uint32_t writemask;                         /* RGBA bits, 0xf default */
 };
 
+/* one more colour target of the pass (MRT): linear 8888 like the first */
+struct lav5_rt {
+	uint64_t gpu;
+	uint32_t pitch;
+	uint32_t format;                            /* 0 bgra8, 1 rgba8 */
+	uint32_t valid;
+};
+
 struct lav5_render {
 	const struct lav5_stage * vs, * fs;
 	const struct lav5_link * link;
@@ -154,6 +162,9 @@ struct lav5_render {
 	struct lav5_blend blend;
 	float blend_color[4];
 	uint64_t hole_gpu;                          /* memory nobody names, for an SSBO slot nothing is bound at */
+	uint32_t nrt;                               /* colour targets of the pass; 0: just the rt_* one. rt[0] is then rt_*, rt[1..] the others */
+	struct lav5_rt rt[8];
+	struct lav5_blend blend_x[8];               /* blend of targets 1.. ([0] is `blend`) */
 };
 
 /* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */

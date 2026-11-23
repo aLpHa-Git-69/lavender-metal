@@ -621,6 +621,63 @@ main(int argc, char ** argv)
 					check(covered > 500 && covered < 2500, "about a third covered");
 				}
 			}
+			/* M5.6: three colour attachments written by one fragment function */
+			if (gFailed == 0) {
+				printf("stage 18: quad_vs + mrt_fs: three render targets\n");
+				id<MTLFunction> vf = [lib newFunctionWithName:@"quad_vs"], ff = [lib newFunctionWithName:@"mrt_fs"];
+				check(vf != nil && ff != nil, "quad_vs and mrt_fs");
+				MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+				rpd.vertexFunction = vf;
+				rpd.fragmentFunction = ff;
+				for (int i = 0; i < 3; i++) {
+					rpd.colorAttachments[i].pixelFormat = MTLPixelFormatBGRA8Unorm;
+				}
+				id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+				check(rps != nil, "a render pipeline state with three colour attachments");
+				if (rps == nil && err != nil) {
+					printf("    %s\n", [[err localizedDescription] UTF8String]);
+				}
+				id<MTLTexture> tx[3];
+				for (int i = 0; i < 3; i++) {
+					MTLTextureDescriptor * td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+					    width:64 height:64 mipmapped:NO];
+					td.usage = MTLTextureUsageRenderTarget;
+					tx[i] = [device newTextureWithDescriptor:td];
+				}
+				if (gFailed == 0) {
+					MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					for (int i = 0; i < 3; i++) {
+						pass.colorAttachments[i].texture = tx[i];
+						pass.colorAttachments[i].loadAction = MTLLoadActionClear;
+						pass.colorAttachments[i].storeAction = MTLStoreActionStore;
+						pass.colorAttachments[i].clearColor = MTLClearColorMake(0, 0, 0, 1);
+					}
+					id<MTLCommandBuffer> cb = [queue commandBuffer];
+					id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+					[re setRenderPipelineState:rps];
+					[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+					[re endEncoding];
+					[cb commit];
+					[cb waitUntilCompleted];
+					check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+					uint32_t o[3], c[3], tl[3];
+					for (int i = 0; i < 3; i++) {
+						uint32_t px[64 * 64];
+						[tx[i] getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+						o[i] = px[1 * 64 + 1];
+						c[i] = px[32 * 64 + 32];
+						tl[i] = px[10 * 64 + 10];
+					}
+					printf("  target 0: outside %08x centre %08x\n  target 1: outside %08x centre %08x\n  target 2: outside %08x centre %08x top-left %08x\n",
+					    o[0], c[0], o[1], c[1], o[2], c[2], tl[2]);
+					check(o[0] == 0xff000000u && o[1] == 0xff000000u && o[2] == 0xff000000u, "outside the quad is the clear colour in all three");
+					check(c[0] == 0xffff0000u, "target 0 is red");
+					check(c[1] == 0xff00ff00u, "target 1 is green");
+					check(((c[2] >> 16) & 255) > 100 && ((c[2] >> 16) & 255) < 156 && ((c[2] >> 8) & 255) > 100 && ((c[2] >> 8) & 255) < 156 && (c[2] & 255) == 255,
+					    "target 2 is the uv, with blue 1 (centre = 0.5, 0.5)");
+					check(((tl[2] >> 16) & 255) < 40 && ((tl[2] >> 8) & 255) < 40, "target 2 is near zero at the top left");
+				}
+			}
 		}
 
 		kr = metalProps(conn, 0);

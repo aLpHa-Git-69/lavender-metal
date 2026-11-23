@@ -1,0 +1,131 @@
+IOServiceOpen: kr 0
+properties on: kr 0
+MTLCreateSystemDefaultDevice: a device
+  class LavenderMetalDevice, name Lavender Adreno 512, maxBufferLength 16777216
+newCommandQueue: an object, buffers: A B
+  A: length 65536
+stage 1: the CPU's view of a buffer
+  a new buffer reads zero                                        OK
+stage 2: fill by the GPU (CP_MEM_WRITE), 4096 aligned bytes
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  bytes 0..4095 are 0xab                                         OK
+  bytes after the range stay zero                                OK
+stage 3: fill with an unaligned start and length
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  bytes 8195..9195 are 0x5a                                      OK
+  the bytes either side stay zero                                OK
+stage 4: copy 64 bytes by the 2D core (A[0..64) -> B[16384..16448))
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 64 bytes are A's                                           OK
+  the bytes after stay zero                                      OK
+stage 5: copy 8192 bytes (A[0..8192) -> B[32768..40960))
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 8192 bytes are A's                                         OK
+  the bytes after stay zero                                      OK
+stage 6: copy with an unaligned start and length (A[5..20005) -> B[41005..61005))
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 20000 bytes are A's                                        OK
+  the bytes before stay as they were                             OK
+stage 6b: copy whose ends are unaligned but alike (A[5..20005) -> B[41029..61029)): the CPU does the edges, the 2D core the middle
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 20000 bytes are A's                                        OK
+  the bytes after stay zero                                      OK
+stage 7: two operations in one command buffer, in order
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the copy sees the fill: 1024 bytes of 0x33                     OK
+stage 8: a library from lavk6.metallib (37432 bytes)
+  newLibraryWithData gave a library                              OK
+  newFunctionWithName: fill_id, saxpy, square                    OK
+  a compute pipeline state of each                               OK
+  fill_id: threadExecutionWidth 32, maxTotalThreadsPerThreadgroup 256
+stage 9: fill_id, 1024 threads, the seed by setBytes
+  the command buffer completed                                   OK
+  all 1024 words are i * 0x9e3779b1 + seed                       OK
+stage 10: saxpy by dispatchThreads, y = 2 x + y over 512 floats
+  the command buffer completed                                   OK
+  all 512 floats are 2 i + 1                                     OK
+stage 11: two dispatches in one command buffer: square, then square of the result (i^4)
+  the command buffer completed                                   OK
+  all 256 words are (i + 3)^4                                    OK
+stage 12: render a triangle into a 64x64 BGRA texture with tri_vs (the vertex id)
+  the vertex and fragment functions                              OK
+  a render pipeline state                                        OK
+  a 64x64 texture                                                OK
+  a render command encoder                                       OK
+  the command buffer completed                                   OK
+  pixels: (1,1) ff202020 (32,40) ff525755 (10,55) ffe50f0a (54,55) ff0aea0a (32,10) ff080deb; 1352 covered
+  the corner keeps the clear colour                              OK
+  the centre is drawn                                            OK
+  bottom-left is red                                             OK
+  bottom-right is green                                          OK
+  top is blue                                                    OK
+  about a third of the target is covered                         OK
+stage 13: render a triangle into a 64x64 BGRA texture with attr_vs (a vertex buffer through a vertex descriptor)
+  the vertex and fragment functions                              OK
+  a render pipeline state                                        OK
+  a 64x64 texture                                                OK
+  a render command encoder                                       OK
+  the command buffer completed                                   OK
+  pixels: (1,1) ff202020 (32,40) ff525755 (10,55) ffe50f0a (54,55) ff0aea0a (32,10) ff080deb; 1352 covered
+  the corner keeps the clear colour                              OK
+  the centre is drawn                                            OK
+  bottom-left is red                                             OK
+  bottom-right is green                                          OK
+  top is blue                                                    OK
+  about a third of the target is covered                         OK
+stage 14: a CAMetalLayer drawable, a triangle into it, presentDrawable:
+  nextDrawable gave a drawable                                   OK
+  drawable texture 64x64 format 80, iosurface 0x1046083d0
+  the drawable texture is over an IOSurface                      OK
+  a render pipeline state                                        OK
+  the command buffer completed                                   OK
+  IOSurface pixels: (1,1) ff202020 (32,40) ff525755 (10,55) ffe50f0a (54,55) ff0aea0a (32,10) ff080deb; 1352 covered
+  the IOSurface has the clear colour and the triangle            OK
+  red, green and blue corners                                    OK
+  about a third covered                                          OK
+stage 15: quad_vs + tex_fs: sample a 4x4 texture (nearest, clamp) into a 64x64 target
+  quad_vs and tex_fs                                             OK
+  a render pipeline state with a sampled texture                 OK
+  a texture and a sampler state                                  OK
+  the command buffer completed                                   OK
+  pixels: outside ff000000, top-left ffff0000, top-right ff00ff00, bottom-left ff0000ff, bottom-right ffffff00
+  outside the quad is the clear colour                           OK
+  top-left is red (BGRA ffff0000... as stored: red)              OK
+  top-right is green                                             OK
+  bottom-left is blue                                            OK
+  bottom-right is yellow                                         OK
+stage 16: blending: quad_vs + half_fs (red, alpha 0.5), SRC_ALPHA / ONE_MINUS_SRC_ALPHA, over blue
+  a blending render pipeline state                               OK
+  the command buffer completed                                   OK
+  pixels: outside ff0000ff, centre 8080007f (r 128 g 0 b 127)
+  outside the quad is blue                                       OK
+  the centre is half red over half blue                          OK
+stage 17: ssbo_vs (vertices from a device buffer), tri_fs
+  ssbo_vs and tri_fs                                             OK
+  a render pipeline state whose vertex stage has a device buffer OK
+  the command buffer completed                                   OK
+  pixels: (1,1) ff202020 (32,40) ff525755 (10,55) ffe50f0a (54,55) ff0aea0a (32,10) ff080deb; 1352 covered
+  clear colour at the corner, the triangle in the centre         OK
+  red, green and blue corners                                    OK
+  about a third covered                                          OK
+stage 18: quad_vs + mrt_fs: three render targets
+  quad_vs and mrt_fs                                             OK
+  a render pipeline state with three colour attachments          OK
+  the command buffer completed                                   OK
+  target 0: outside ff000000 centre ffff0000
+  target 1: outside ff000000 centre ff00ff00
+  target 2: outside ff000000 centre ff8282ff top-left ff2020ff
+  outside the quad is the clear colour in all three              OK
+  target 0 is red                                                OK
+  target 1 is green                                              OK
+  target 2 is the uv, with blue 1 (centre = 0.5, 0.5)            OK
+  target 2 is near zero at the top left                          OK
+properties off: kr 0
+PASSED

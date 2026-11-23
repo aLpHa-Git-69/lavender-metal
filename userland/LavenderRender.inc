@@ -256,7 +256,7 @@ texReplaceSlice(id self, SEL cmd, LavRegion r, uint64_t level, __unused uint64_t
 /* ---- the render pipeline state ---- */
 
 struct rpipe {
-	struct lav5_blend blend;
+	struct lav5_blend blend[8];
 	id vfn, ffn;                            /* retained */
 	struct lav5_stage vs, fs;
 	struct lav5_link link;
@@ -299,6 +299,43 @@ vertexFormat(uint64_t f, uint32_t * fmt, uint32_t * isfloat)
 	case 9: *fmt = 48; return YES;
 	}
 	return NO;
+}
+
+static BOOL
+readBlend(id desc, uint64_t index, struct lav5_blend * out)
+{
+	id ca = msgAt(msg0(desc, "colorAttachments"), "objectAtIndexedSubscript:", index);
+	static const uint8_t factor[15] = { 0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 16, 12, 13, 14, 15 };
+	uint64_t wm = msgU(ca, "writeMask");
+
+	memset(out, 0, sizeof(*out));
+	out->writemask = ((wm >> 3) & 1) | (((wm >> 2) & 1) << 1) | (((wm >> 1) & 1) << 2) | ((wm & 1) << 3);
+	out->enable = msgU(ca, "isBlendingEnabled") & 0xff ? 1 : 0;
+	if (out->enable) {
+		uint64_t f[4] = { msgU(ca, "sourceRGBBlendFactor"), msgU(ca, "destinationRGBBlendFactor"),
+		    msgU(ca, "sourceAlphaBlendFactor"), msgU(ca, "destinationAlphaBlendFactor") };
+		uint64_t ops[2] = { msgU(ca, "rgbBlendOperation"), msgU(ca, "alphaBlendOperation") };
+
+		for (int i = 0; i < 4; i++) {
+			if (f[i] >= 15) {
+				lavlog("render pipeline: blend factor %llu is not served", (unsigned long long)f[i]);
+				return NO;
+			}
+		}
+		for (int i = 0; i < 2; i++) {
+			if (ops[i] > 4) {
+				lavlog("render pipeline: blend operation %llu is not served", (unsigned long long)ops[i]);
+				return NO;
+			}
+		}
+		out->rgb_src = factor[f[0]];
+		out->rgb_dst = factor[f[1]];
+		out->a_src = factor[f[2]];
+		out->a_dst = factor[f[3]];
+		out->rgb_op = (uint32_t)ops[0];
+		out->a_op = (uint32_t)ops[1];
+	}
+	return YES;
 }
 
 static id
@@ -375,37 +412,10 @@ makeRenderPipeline(id desc, NSError ** err)
 		[o release];
 		return nil;
 	}
-	/* blending and the write mask, from colour attachment 0 */
-	{
-		id ca = msgAt(msg0(desc, "colorAttachments"), "objectAtIndexedSubscript:", 0);
-		static const uint8_t factor[15] = { 0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 16, 12, 13, 14, 15 };
-		uint64_t wm = msgU(ca, "writeMask");
-
-		rp->blend.writemask = ((wm >> 3) & 1) | (((wm >> 2) & 1) << 1) | (((wm >> 1) & 1) << 2) | ((wm & 1) << 3);
-		rp->blend.enable = msgU(ca, "isBlendingEnabled") & 0xff ? 1 : 0;
-		if (rp->blend.enable) {
-			uint64_t f[4] = { msgU(ca, "sourceRGBBlendFactor"), msgU(ca, "destinationRGBBlendFactor"),
-			    msgU(ca, "sourceAlphaBlendFactor"), msgU(ca, "destinationAlphaBlendFactor") };
-			uint64_t ops[2] = { msgU(ca, "rgbBlendOperation"), msgU(ca, "alphaBlendOperation") };
-
-			for (int i = 0; i < 4; i++) {
-				if (f[i] >= 15) {
-					lavlog("render pipeline: blend factor %llu is not served", (unsigned long long)f[i]);
-					goto refuse;
-				}
-			}
-			for (int i = 0; i < 2; i++) {
-				if (ops[i] > 4) {
-					lavlog("render pipeline: blend operation %llu is not served", (unsigned long long)ops[i]);
-					goto refuse;
-				}
-			}
-			rp->blend.rgb_src = factor[f[0]];
-			rp->blend.rgb_dst = factor[f[1]];
-			rp->blend.a_src = factor[f[2]];
-			rp->blend.a_dst = factor[f[3]];
-			rp->blend.rgb_op = (uint32_t)ops[0];
-			rp->blend.a_op = (uint32_t)ops[1];
+	/* blending and the write mask, from each colour attachment */
+	for (uint64_t ai = 0; ai < 8; ai++) {
+		if (!readBlend(desc, ai, &rp->blend[ai])) {
+			goto refuse;
 		}
 	}
 	rp->vfn = [vf retain];
@@ -484,6 +494,7 @@ struct renc {
 	BOOL ended;
 	id label;
 	id target;                              /* retained */
+	id xtarget[8];                          /* retained: colour targets 1.. */
 	id pipeline;                            /* retained */
 	id vbuf[LAV5_MAX_BUFFERS];
 	uint64_t voff[LAV5_MAX_BUFFERS];
@@ -514,11 +525,6 @@ cbRenderEncoder(id self, __unused SEL _cmd, id passdesc)
 		lavlog("renderCommandEncoder: colour attachment 0 is not a texture of this driver (drawables come with M5.5)");
 		return nil;
 	}
-	for (uint64_t i = 1; i < 8; i++) {
-		if (msg0(msgAt(atts, "objectAtIndexedSubscript:", i), "texture") != nil) {
-			lavlog("renderCommandEncoder: more than one colour attachment is not served");
-		}
-	}
 	if (msg0(msg0(passdesc, "depthAttachment"), "texture") != nil || msg0(msg0(passdesc, "stencilAttachment"), "texture") != nil) {
 		lavlog("renderCommandEncoder: depth and stencil attachments are not served (ignored)");
 	}
@@ -531,6 +537,30 @@ cbRenderEncoder(id self, __unused SEL _cmd, id passdesc)
 	re->commandBuffer = [self retain];
 	re->target = [tex retain];
 	ts = STATE(tex, struct texstate);
+	for (uint64_t i = 1; i < 8; i++) {
+		id a = msgAt(atts, "objectAtIndexedSubscript:", i), t = msg0(a, "texture");
+
+		if (t == nil) {
+			continue;
+		}
+		if (object_getClass(t) != gTextureClass || STATE(t, struct texstate)->width != ts->width ||
+		    STATE(t, struct texstate)->height != ts->height) {
+			lavlog("renderCommandEncoder: colour attachment %llu is not a texture of this driver of the same size as attachment 0", (unsigned long long)i);
+			continue;
+		}
+		re->xtarget[i] = [t retain];
+		if (msgU(a, "loadAction") == 2) {
+			struct op * cop = cbAddOp(STATE(self, struct cbstate));
+			LavClear c = ((LavClear (*)(id, SEL))objc_msgSend)(a, sel_registerName("clearColor"));
+
+			cop->kind = OP_CLEAR;
+			cop->dst = [t retain];
+			cop->clear[0] = c.r;
+			cop->clear[1] = c.g;
+			cop->clear[2] = c.b;
+			cop->clear[3] = c.a;
+		}
+	}
 	re->viewport[2] = (float)ts->width;
 	re->viewport[3] = (float)ts->height;
 	re->viewport[5] = 1;
@@ -569,6 +599,9 @@ rencDealloc(id self, __unused SEL _cmd)
 	for (int i = 0; i < 16; i++) {
 		[re->ftex[i] release];
 		[re->fsamp[i] release];
+	}
+	for (int i = 0; i < 8; i++) {
+		[re->xtarget[i] release];
 	}
 	[re->pipeline release];
 	[re->target release];
@@ -842,6 +875,9 @@ rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t ins
 	op->draw = d;
 	d->pipeline = [re->pipeline retain];
 	d->target = [re->target retain];
+	for (int i = 1; i < 8; i++) {
+		d->xtarget[i] = [re->xtarget[i] retain];
+	}
 	for (int i = 0; i < LAV5_MAX_BUFFERS; i++) {
 		d->vbuf[i] = [re->vbuf[i] retain];
 		d->voff[i] = re->voff[i];
@@ -1013,7 +1049,18 @@ runDraw(struct op * op)
 	memcpy(r->scissor, d->scissor, sizeof(r->scissor));
 	r->cull = d->cull;
 	r->front_cw = d->front_cw;
-	r->blend = rp->blend;
+	r->blend = rp->blend[0];
+	r->nrt = 1;
+	for (int i = 1; i < 8; i++) {
+		r->blend_x[i] = rp->blend[i];
+		if (d->xtarget[i] != nil) {
+			struct texstate * xt = STATE(d->xtarget[i], struct texstate);
+
+			r->rt[i] = (struct lav5_rt){ xt->b.gpu, xt->pitch, xt->format == PF_BGRA8 ? 0u : 1u, 1 };
+			r->nrt = i + 1;
+		}
+	}
+	r->rt[0] = (struct lav5_rt){ r->rt_gpu, r->rt_pitch, r->rt_format, 1 };
 	memcpy(r->blend_color, d->blend_color, sizeof(r->blend_color));
 	for (int i = 0; i < 16; i++) {
 		if (d->ftex[i] != nil) {
