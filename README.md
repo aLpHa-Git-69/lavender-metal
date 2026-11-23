@@ -80,7 +80,7 @@ verified (on the device unless noted).
 - [ ] M5.2b: textures and samplers (next to compute)
 - [ ] M5.3: libraries and the shader compiler (AIR to A5xx), compute encoder
 - [ ] M5.4: render pipeline and render encoder: a triangle through Metal
-- [ ] M5.5: present a drawable to the panel
+- [x] M5.5: CAMetalLayer drawable over an IOSurface, presented (checked in a process; the compositor is M5.6)
 - [ ] M5.6: CoreAnimation over Metal (PosterBoard preview, Astronomy wallpaper)
 - [ ] Idle lock screen costs a fraction of today's `backboardd` CPU (now ~150-170 % of 400 %, ~13 fps)
 

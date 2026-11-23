@@ -125,3 +125,13 @@ lavmetal_test stages 12-13 (tri_vs by vertex id; attr_vs through a vertex descri
 corner colours. Output in docs/m54b-phone-metal-render.txt.
 Not served yet: sampling textures, depth/stencil, blending, indexed draws, points, MSAA, load/store actions beyond clear, other
 pixel formats. Next: M5.5 present (CAMetalLayer drawables), M5.6 CoreAnimation acceptance.
+
+## M5.5 done (2026-11-22): CAMetalLayer drawables and present, in a process
+
+`nextDrawable` of a `CAMetalLayer` whose device is ours asks `newTextureWithDescriptor:iosurface:plane:`; the plug-in gives a
+texture with its own contiguous memory (the GPU cannot reach an IOSurface's scattered pages) tied to the IOSurface, and at the end
+of the command buffer copies its rows into the IOSurface (Load actions copy the other way); `presentDrawable:` (and `atTime:`,
+`afterMinimumDuration:`) call `[drawable present]` once the work and the copy are done. lavmetal_test stage 14 PASSED on the phone:
+the IOSurface holds the clear colour and the triangle (1352 pixels, correct corners); no unimplemented message was logged.
+Output: docs/m55-phone-present.txt. Cost: one CPU copy of the frame per present (about 4 MB at 720x1440), to be measured in M5.6.
+What this does not prove: that backboardd/CoreAnimation's compositor shows such a surface on the panel; that is M5.6.

@@ -14,6 +14,8 @@ registerRenderClasses(Class device)
 		ADD(gTextureClass, "device", objDevice, "@@:");
 		ADD(gTextureClass, "label", texLabel, "@@:");
 		ADD(gTextureClass, "setLabel:", texSetLabel, "v@:@");
+		ADD(gTextureClass, "iosurface", texIOSurface, "^{__IOSurface=}@:");
+		ADD(gTextureClass, "iosurfacePlane", texOne, "Q@:");
 		ADD(gTextureClass, "width", texWidth, "Q@:");
 		ADD(gTextureClass, "height", texHeight, "Q@:");
 		ADD(gTextureClass, "depth", texOne, "Q@:");
@@ -35,6 +37,7 @@ registerRenderClasses(Class device)
 		    "v@:{_MTLRegion={_MTLOrigin=QQQ}{_MTLSize=QQQ}}QQr^vQQ");
 		objc_registerClassPair(gTextureClass);
 		ADD(device, "newTextureWithDescriptor:", deviceNewTexture, "@@:@");
+		ADD(device, "newTextureWithDescriptor:iosurface:plane:", deviceNewTextureSurface, "@@:@^{__IOSurface=}Q");
 	}
 	if ((gRenderPipeClass = newClass("LavenderMetalRenderPipeline", "_MTLRenderPipelineState")) != Nil) {
 		declareNamed(gRenderPipeClass, rps);
@@ -75,5 +78,8 @@ registerRenderClasses(Class device)
 		ADD(gRenderClass, "endEncoding", rencEnd, "v@:");
 		objc_registerClassPair(gRenderClass);
 		ADD(gCommandBufferClass, "renderCommandEncoderWithDescriptor:", cbRenderEncoder, "@@:@");
+		ADD(gCommandBufferClass, "presentDrawable:", cbPresent, "v@:@");
+		ADD(gCommandBufferClass, "presentDrawable:atTime:", cbPresentAt, "v@:@d");
+		ADD(gCommandBufferClass, "presentDrawable:afterMinimumDuration:", cbPresentAt, "v@:@d");
 	}
 }

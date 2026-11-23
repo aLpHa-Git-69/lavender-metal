@@ -31,6 +31,7 @@ msgAt(id o, const char * sel, uint64_t i)
 #define PF_BGRA8 80
 
 struct texstate {
+	IOSurfaceRef surface;                   /* retained: the texture is a CAMetalLayer drawable; present copies into it */
 	struct lbuf b;
 	uint32_t width, height, format, pitch;
 	uint64_t usage, storage;
@@ -87,6 +88,89 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	return o;
 }
 
+/* IOSurface <-> the texture's own memory (the GPU cannot reach an IOSurface's scattered pages): rows copied at the edges */
+static void
+surfaceCopy(struct texstate * t, BOOL toSurface)
+{
+	size_t sp, rows = t->height, row = (size_t)t->width * 4;
+	uint8_t * base;
+
+	if (IOSurfaceLock(t->surface, toSurface ? 0 : kIOSurfaceLockReadOnly, NULL) != 0) {
+		lavlog("IOSurfaceLock failed");
+		return;
+	}
+	sp = IOSurfaceGetBytesPerRow(t->surface);
+	base = IOSurfaceGetBaseAddress(t->surface);
+	if (IOSurfaceGetHeight(t->surface) < rows) {
+		rows = IOSurfaceGetHeight(t->surface);
+	}
+	for (size_t y = 0; y < rows; y++) {
+		if (toSurface) {
+			memcpy(base + y * sp, (uint8_t *)t->b.cpu + y * t->pitch, row);
+		} else {
+			memcpy((uint8_t *)t->b.cpu + y * t->pitch, base + y * sp, row);
+		}
+	}
+	IOSurfaceUnlock(t->surface, toSurface ? 0 : kIOSurfaceLockReadOnly, NULL);
+}
+
+static void
+cbSyncSurfaces(struct cbstate * st)
+{
+	for (size_t i = 0; i < st->nops; i++) {
+		id tex = st->ops[i].kind == OP_DRAW ? st->ops[i].draw->target : st->ops[i].kind == OP_CLEAR ? st->ops[i].dst : nil;
+
+		if (tex != nil && STATE(tex, struct texstate)->surface != NULL) {
+			surfaceCopy(STATE(tex, struct texstate), YES);
+		}
+	}
+}
+
+static id
+deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_t plane)
+{
+	id o;
+	struct texstate * st;
+
+	if (surface == NULL || plane != 0 || IOSurfaceGetPixelFormat(surface) != 'BGRA') {
+		lavlog("newTexture from an IOSurface: plane %llu, pixel format %#x: only plane 0 of BGRA is served",
+		    (unsigned long long)plane, surface != NULL ? IOSurfaceGetPixelFormat(surface) : 0);
+		return nil;
+	}
+	o = deviceNewTexture(self, cmd, desc);
+	if (o == nil) {
+		return nil;
+	}
+	st = STATE(o, struct texstate);
+	if (st->format != PF_BGRA8 || IOSurfaceGetWidth(surface) < st->width || IOSurfaceGetHeight(surface) < st->height) {
+		lavlog("newTexture from an IOSurface: the surface (%zux%zu) does not hold the texture (%ux%u)", IOSurfaceGetWidth(surface),
+		    IOSurfaceGetHeight(surface), st->width, st->height);
+		[o release];
+		return nil;
+	}
+	st->surface = (IOSurfaceRef)CFRetain(surface);
+	lavlog("texture over an IOSurface %zux%zu, row %zu bytes", IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface),
+	    IOSurfaceGetBytesPerRow(surface));
+	return o;
+}
+
+static void
+cbPresent(id self, __unused SEL _cmd, id drawable)
+{
+	struct cbstate * st = STATE(self, struct cbstate);
+
+	if (st->drawables == nil) {
+		st->drawables = [NSMutableArray new];
+	}
+	[st->drawables addObject:drawable];
+}
+
+static void
+cbPresentAt(id self, SEL cmd, id drawable, __unused double t)
+{
+	cbPresent(self, cmd, drawable);
+}
+
 static void
 texDealloc(id self, __unused SEL _cmd)
 {
@@ -96,10 +180,14 @@ texDealloc(id self, __unused SEL _cmd)
 	pthread_mutex_lock(&gGPULock);
 	lavBufFree(&st->b);
 	pthread_mutex_unlock(&gGPULock);
+	if (st->surface != NULL) {
+		CFRelease(st->surface);
+	}
 	[st->label release];
 	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
 }
 
+static IOSurfaceRef texIOSurface(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->surface; }
 static uint64_t texWidth(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->width; }
 static uint64_t texHeight(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->height; }
 static uint64_t texOne(__unused id self, __unused SEL _cmd) { return 1; }
@@ -413,6 +501,9 @@ cbRenderEncoder(id self, __unused SEL _cmd, id passdesc)
 	re->scissor[2] = ts->width;
 	re->scissor[3] = ts->height;
 	re->front_cw = 1;
+	if (msgU(att, "loadAction") == 1 && ts->surface != NULL) {
+		surfaceCopy(ts, NO);
+	}
 	if (msgU(att, "loadAction") == 2) {
 		struct op * op = cbAddOp(STATE(self, struct cbstate));
 		LavClear c = ((LavClear (*)(id, SEL))objc_msgSend)(att, sel_registerName("clearColor"));

@@ -23,6 +23,7 @@
  * time, in the constructor that runs when the bundle is loaded. Built without ARC.
  */
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurfaceRef.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <IOKit/IOKitLib.h>
@@ -623,6 +624,7 @@ struct cbstate {
 	id queue;
 	NSMutableArray * handlers;
 	NSMutableArray * scheduled;
+	NSMutableArray * drawables;     /* presentDrawable: */
 	struct op * ops;
 	size_t nops, cap;
 	int status;                     /* MTLCommandBufferStatus */
@@ -719,6 +721,7 @@ cbDealloc(id self, __unused SEL _cmd)
 	[st->queue release];
 	[st->handlers release];
 	[st->scheduled release];
+	[st->drawables release];
 	[st->label release];
 	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
 }
@@ -1614,6 +1617,7 @@ runDispatch(struct op * op)
 
 typedef void (^LavHandler)(id);
 
+static void cbSyncSurfaces(struct cbstate * st);
 static BOOL runClear(struct op * op);
 static BOOL runDraw(struct op * op);
 
@@ -1651,8 +1655,17 @@ cbCommit(id self, __unused SEL _cmd)
 			break;
 		}
 	}
+	if (ok) {
+		cbSyncSurfaces(st);
+	}
 	pthread_mutex_unlock(&gGPULock);
 	cbFreeOps(st);
+	if (ok) {
+		for (id d in st->drawables) {
+			((void (*)(id, SEL))objc_msgSend)(d, sel_registerName("present"));
+		}
+	}
+	[st->drawables removeAllObjects];
 	st->status = ok ? 4 : 5;                /* Completed or Error */
 	for (id h in st->handlers) {
 		((LavHandler)h)(self);

@@ -11,6 +11,8 @@
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <IOSurface/IOSurfaceRef.h>
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <signal.h>
@@ -404,6 +406,63 @@ main(int argc, char ** argv)
 					check(((gg >> 8) & 255) > ((gg >> 16) & 255) && ((gg >> 8) & 255) > (gg & 255), "bottom-right is green");
 					check((bb & 255) > ((bb >> 16) & 255) && (bb & 255) > ((bb >> 8) & 255), "top is blue");
 					check(covered > 500 && covered < 2500, "about a third of the target is covered");
+				}
+			}
+			/* M5.5: a CAMetalLayer drawable (an IOSurface-backed texture), presented */
+			if (gFailed == 0) {
+				printf("stage 14: a CAMetalLayer drawable, a triangle into it, presentDrawable:\n");
+				CAMetalLayer * layer = [CAMetalLayer layer];
+				layer.device = device;
+				layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+				layer.framebufferOnly = NO;
+				layer.drawableSize = CGSizeMake(64, 64);
+				id<CAMetalDrawable> drawable = [layer nextDrawable];
+				check(drawable != nil, "nextDrawable gave a drawable");
+				if (drawable != nil) {
+					id<MTLTexture> dt = drawable.texture;
+					printf("  drawable texture %lux%lu format %lu, iosurface %p\n", (unsigned long)dt.width, (unsigned long)dt.height,
+					    (unsigned long)dt.pixelFormat, (void *)dt.iosurface);
+					check(dt.iosurface != NULL, "the drawable texture is over an IOSurface");
+					id<MTLFunction> vf = [lib newFunctionWithName:@"tri_vs"], ff = [lib newFunctionWithName:@"tri_fs"];
+					MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+					rpd.vertexFunction = vf;
+					rpd.fragmentFunction = ff;
+					rpd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+					id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+					check(rps != nil, "a render pipeline state");
+					if (rps != nil && dt.iosurface != NULL) {
+						MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+						pass.colorAttachments[0].texture = dt;
+						pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+						pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+						pass.colorAttachments[0].clearColor = MTLClearColorMake(32 / 255.0, 32 / 255.0, 32 / 255.0, 1);
+						id<MTLCommandBuffer> cb = [queue commandBuffer];
+						id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+						[re setRenderPipelineState:rps];
+						[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+						[re endEncoding];
+						[cb presentDrawable:drawable];
+						[cb commit];
+						[cb waitUntilCompleted];
+						check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+						IOSurfaceRef surf = dt.iosurface;
+						IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
+						const uint8_t * base = IOSurfaceGetBaseAddress(surf);
+						size_t sp = IOSurfaceGetBytesPerRow(surf);
+						#define SPX(x, y) (*(const uint32_t *)(base + (y) * sp + (x) * 4))
+						uint32_t a = SPX(1, 1), c = SPX(32, 40), rr = SPX(10, 55), gg = SPX(54, 55), bb = SPX(32, 10);
+						int covered = 0;
+						for (int y = 0; y < 64; y++) {
+							for (int x = 0; x < 64; x++) {
+								covered += SPX(x, y) != 0xff202020u;
+							}
+						}
+						IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
+						printf("  IOSurface pixels: (1,1) %08x (32,40) %08x (10,55) %08x (54,55) %08x (32,10) %08x; %d covered\n", a, c, rr, gg, bb, covered);
+						check(a == 0xff202020u && c != 0xff202020u, "the IOSurface has the clear colour and the triangle");
+						check(((rr >> 16) & 255) > ((rr >> 8) & 255) && (bb & 255) > ((bb >> 16) & 255) && ((gg >> 8) & 255) > (gg & 255), "red, green and blue corners");
+						check(covered > 500 && covered < 2500, "about a third covered");
+					}
 				}
 			}
 		}
