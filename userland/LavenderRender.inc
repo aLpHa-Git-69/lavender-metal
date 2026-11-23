@@ -53,7 +53,7 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 		lavlog("newTexture %llux%llu refused", (unsigned long long)w, (unsigned long long)h);
 		return nil;
 	}
-	if ((fmt != PF_RGBA8 && fmt != PF_BGRA8) || type != 2 || depth > 1 || mips > 1 || samples > 1 || layers > 1) {
+	if ((fmt != PF_RGBA8 && fmt != PF_BGRA8) || type != 2 || depth > 1 || samples > 1 || layers > 1) {
 		lavlog("newTexture: pixel format %llu, type %llu, %llu mips, %llu samples, %llu layers: not served (2D RGBA8/BGRA8 only)",
 		    (unsigned long long)fmt, (unsigned long long)type, (unsigned long long)mips, (unsigned long long)samples,
 		    (unsigned long long)layers);
@@ -61,6 +61,10 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	}
 	pitch = ((size_t)w * 4 + 63) & ~(size_t)63;
 	len = pitch * (size_t)h;
+	if (mips > 1) {
+		/* room for the whole chain (under 4/3 of the base level); only level 0 is drawn to and sampled for now */
+		len = len + len / 2;
+	}
 	if (len > (16u << 20)) {
 		return nil;
 	}

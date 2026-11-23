@@ -513,8 +513,17 @@ stubSignature(id self, SEL _cmd, SEL selector)
 	}
 	struct objc_super sup = { self, class_getSuperclass(object_getClass(self)) };
 
+	id sig;
+
 	(void)_cmd;
-	return ((id (*)(struct objc_super *, SEL, SEL))objc_msgSendSuper)(&sup, sel_registerName("methodSignatureForSelector:"), selector);
+	sig = ((id (*)(struct objc_super *, SEL, SEL))objc_msgSendSuper)(&sup, sel_registerName("methodSignatureForSelector:"), selector);
+	if (sig == nil) {
+		/* a selector no protocol declares (Metal's SPI): answered with an 8-byte zero rather than an exception, and logged */
+		lavlog("unknown selector -%s on %s: answered with zero", sel_getName(selector), class_getName(object_getClass(self)));
+		sig = ((id (*)(Class, SEL, const char *))objc_msgSend)(objc_getClass("NSMethodSignature"),
+		    sel_registerName("signatureWithObjCTypes:"), "Q@:");
+	}
+	return sig;
 }
 
 static void
