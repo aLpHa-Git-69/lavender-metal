@@ -36,6 +36,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define LAV_LOG "/var/root/lavmetal.log"
 
@@ -1113,6 +1114,7 @@ static struct lbuf gBytes;                  /* the bytes setBytes: gave, for the
 
 struct libstate {
 	struct lavcc_lib * lib;
+	uint64_t hash;                          /* of the metallib bytes: the key of the pipeline cache */
 	id label;
 };
 
@@ -1152,6 +1154,17 @@ lavError(NSError ** err, NSString * domain, const char * why)
 	}
 }
 
+static uint64_t
+lavHash64(uint64_t h, const void * p, size_t n)
+{
+	const uint8_t * b = p;
+
+	for (size_t i = 0; i < n; i++) {
+		h = (h ^ b[i]) * 0x100000001b3ull;
+	}
+	return h;
+}
+
 static id
 makeLibrary(const void * bytes, size_t size, NSError ** err)
 {
@@ -1174,6 +1187,7 @@ makeLibrary(const void * bytes, size_t size, NSError ** err)
 	}
 	memset(STATE(o, struct libstate), 0, sizeof(struct libstate));
 	STATE(o, struct libstate)->lib = lib;
+	STATE(o, struct libstate)->hash = lavHash64(0xcbf29ce484222325ull, bytes, size);
 	lavlog("library of %zu bytes, %u functions", size, lavcc_function_count(lib));
 	return o;
 }

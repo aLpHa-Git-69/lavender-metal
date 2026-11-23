@@ -345,6 +345,119 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
 	return YES;
 }
 
+/*
+ * Compiling a pipeline takes seconds (QuartzCore's fixed_frag_lph_cph is 26000 words), and backboardd needs dozens at start. The
+ * compiled stages are kept in /var/tmp/lavmetal-cache, one file per vertex/fragment pair, keyed by the two metallibs and the
+ * function names and by this plug-in build (the compiler changes with it).
+ */
+#define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
+#define PIPE_CACHE_MAGIC 0x4c564331u
+
+static void
+pipeCachePath(struct fnstate * vs, struct fnstate * fs, char * path, size_t n)
+{
+	uint64_t h = 0xcbf29ce484222325ull;
+	const char * stamp = __DATE__ __TIME__;
+
+	h = lavHash64(h, stamp, strlen(stamp));
+	h = lavHash64(h, &STATE(vs->library, struct libstate)->hash, 8);
+	h = lavHash64(h, &STATE(fs->library, struct libstate)->hash, 8);
+	h = lavHash64(h, [vs->name UTF8String], strlen([vs->name UTF8String]) + 1);
+	h = lavHash64(h, [fs->name UTF8String], strlen([fs->name UTF8String]) + 1);
+	snprintf(path, n, PIPE_CACHE_DIR "/%016llx.pipe", (unsigned long long)h);
+}
+
+static BOOL
+pipeReadStage(FILE * f, struct lav5_stage * st)
+{
+	uint32_t * w, * imm;
+	uint32_t nw, ni;
+
+	if (fread(st, sizeof(*st), 1, f) != 1) {
+		return NO;
+	}
+	nw = st->k.nwords;
+	ni = st->k.nimm;
+	if (nw == 0 || nw > (1u << 20) || ni > (1u << 16)) {
+		return NO;
+	}
+	w = malloc(nw * 4);
+	imm = ni != 0 ? malloc(ni * 4) : NULL;
+	if (fread(w, 4, nw, f) != nw || (ni != 0 && fread(imm, 4, ni, f) != ni)) {
+		free(w);
+		free(imm);
+		return NO;
+	}
+	st->k.words = w;
+	st->k.imm = imm;
+	return YES;
+}
+
+static BOOL
+pipeCacheLoad(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
+{
+	char path[160];
+	uint32_t magic = 0;
+	FILE * f;
+	BOOL ok;
+
+	pipeCachePath(vs, fs, path, sizeof(path));
+	f = fopen(path, "rb");
+	if (f == NULL) {
+		return NO;
+	}
+	ok = fread(&magic, 4, 1, f) == 1 && magic == PIPE_CACHE_MAGIC && fread(&rp->link, sizeof(rp->link), 1, f) == 1 &&
+	    pipeReadStage(f, &rp->vs) && pipeReadStage(f, &rp->fs);
+	fclose(f);
+	if (!ok) {
+		memset(&rp->vs, 0, sizeof(rp->vs));
+		memset(&rp->fs, 0, sizeof(rp->fs));
+		return NO;
+	}
+	lavlog("pipeline cache: %s + %s", [vs->name UTF8String], [fs->name UTF8String]);
+	return YES;
+}
+
+static void
+pipeWriteStage(FILE * f, const struct lav5_stage * st)
+{
+	struct lav5_stage c = *st;
+
+	c.k.words = NULL;
+	c.k.imm = NULL;
+	fwrite(&c, sizeof(c), 1, f);
+	fwrite(st->k.words, 4, st->k.nwords, f);
+	if (st->k.nimm != 0) {
+		fwrite(st->k.imm, 4, st->k.nimm, f);
+	}
+}
+
+static void
+pipeCacheStore(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
+{
+	char path[160], tmp[176];
+	uint32_t magic = PIPE_CACHE_MAGIC;
+	FILE * f;
+
+	mkdir(PIPE_CACHE_DIR, 01777);
+	chmod(PIPE_CACHE_DIR, 01777);
+	pipeCachePath(vs, fs, path, sizeof(path));
+	snprintf(tmp, sizeof(tmp), "%s.%d", path, (int)getpid());
+	f = fopen(tmp, "wb");
+	if (f == NULL) {
+		return;
+	}
+	fwrite(&magic, 4, 1, f);
+	fwrite(&rp->link, sizeof(rp->link), 1, f);
+	pipeWriteStage(f, &rp->vs);
+	pipeWriteStage(f, &rp->fs);
+	if (fclose(f) == 0) {
+		rename(tmp, path);
+	} else {
+		unlink(tmp);
+	}
+}
+
 static id
 makeRenderPipeline(id desc, NSError ** err)
 {
@@ -373,8 +486,14 @@ makeRenderPipeline(id desc, NSError ** err)
 	rp = STATE(o, struct rpipe);
 	memset(rp, 0, sizeof(*rp));
 	pthread_mutex_lock(&gCCLock);
-	ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String],
-	    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
+	ok = pipeCacheLoad(vs, fs, rp);
+	if (!ok) {
+		ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String],
+		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
+		if (ok) {
+			pipeCacheStore(vs, fs, rp);
+		}
+	}
 	pthread_mutex_unlock(&gCCLock);
 	if (!ok) {
 		lavlog("render pipeline %s + %s: the compiler refused it: %s", [vs->name UTF8String], [fs->name UTF8String], why);
