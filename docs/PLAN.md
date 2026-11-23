@@ -243,3 +243,16 @@ up with 5 x 512 KB + 20 x 128 KB = 5.1 MB in total, and a 6 MB buffer is not ava
 ~10 MB, so it cannot be allocated like this. The fix is a contiguous region reserved at boot (carve-out in the shim's memory map or an
 early IOKit reservation, in kernel/LavenderGPU.cpp / the shim) that the service hands slabs out of; or scatter-gather through the
 GPU's SMMU (the page table is currently an identity of the first 4 GB). Until then only small surfaces work.
+
+## M5.6 (i) done (2026-11-23): CoreAnimation's CARenderer draws on the Adreno
+
+The contiguous-memory blocker of (h) is gone: the service now takes its big pool from StartIOKitMatching in its own kernel thread
+(lavender-ios16 patches 0345/0346), so 8 MB and larger buffers exist after boot (phone shim 0348, built on the Mac).
+userland/lavca_test: a CALayer tree (red root, green and blue children) rendered by CARenderer into a 256x256 BGRA texture through the
+plug-in, read back: PASSED (docs/m56h-phone-carenderer.txt). CoreAnimation colour-matches, so red reads ff2600, green 00f900, blue 0433ff.
+What it needed: queue completionQueue, newPipelineLibraryWithFilePath: refused (default.pipelinelib), newFunctionWithDescriptor:,
+20 texture slots (fixed_frag_lph_cph samples 16 and reads its target as a 17th), half vertex formats, indexed draws, and private memory
+for a5xx render stages (per-stage PVT_MEM buffer; fibers per SP is a guess: 4096, 2 SPs).
+lavqc_test on QuartzCore's default.metallib: 78 drawn, 0 failed (was 70/8), 83 without a pipeline (varying slots 32-34), docs/m56h-phone-quartzcore-draws.txt.
+Open for backboardd: the 83 pipelines without varyings, clip distance, per-fiber guess for private memory, then enabling the device for
+backboardd behind a boot-arg with the CPU compositor fallback and measuring CPU/fps at the lock screen.

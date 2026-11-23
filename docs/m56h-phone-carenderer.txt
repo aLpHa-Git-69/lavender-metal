@@ -1,0 +1,20 @@
+2026-11-23 18:05:14.806 lavca_test[3157:20896] LavenderMetal: this system has no _MTLTexture: LavenderMetalTexture is made on NSObject
+2026-11-23 18:05:14.998 lavca_test[3157:20896] LavenderMetal: loaded: LavenderMetalDevice and its objects are registered (base _MTLDevice)
+2026-11-23 18:05:15.029 lavca_test[3157:20896] LavenderMetal: a device for the accelerator port 5123 (made)
+2026-11-23 18:05:15.038 lavca_test[3157:20896] LavenderMetal: asked and not implemented: -featureProfile (LavenderMetalDevice; returns 8 bytes, answered with zero)
+2026-11-23 18:05:15.075 lavca_test[3157:20896] LavenderMetal: the GPU service is open; stream buffer at GPU 0xa33b8000
+2026-11-23 18:05:15.084 lavca_test[3157:20896] LavenderMetal: slab 0: 8388608 bytes at GPU 0xa33c8000
+2026-11-23 18:05:15.089 lavca_test[3157:20896] LavenderMetal: texture 256x256 format 80, pitch 1024, at GPU 0xa33c8000
+2026-11-23 18:05:15.255 lavca_test[3157:20896] LavenderMetal: asked and not implemented: -newDepthStencilStateWithDescriptor: (LavenderMetalDevice; returns 8 bytes, answered with zero)
+2026-11-23 18:05:15.355 lavca_test[3157:20896] LavenderMetal: library of 1014944 bytes, 141 functions
+2026-11-23 18:05:15.363 lavca_test[3157:20896] LavenderMetal: newPipelineLibraryWithFilePath: /System/Library/Frameworks/QuartzCore.framework/default.pipelinelib: pipeline libraries are not supported
+2026-11-23 18:05:15.382 lavca_test[3157:20896] LavenderMetal: asked and not implemented: -protectionOptions (LavenderMetalTexture; returns 8 bytes, answered with zero)
+2026-11-23 18:05:15.387 lavca_test[3157:20896] LavenderMetal: texture 256x256 format 80, pitch 1024, at GPU 0xa3408000
+2026-11-23 18:05:16.519 lavca_test[3157:20896] LavenderMetal: asked and not implemented: -setProtectionOptions: (LavenderMetalCommandBuffer; returns 0 bytes, answered with zero)
+2026-11-23 18:05:32.614 lavca_test[3157:20896] LavenderMetal: render pipeline fixed_vert_lph_spc + fixed_frag_lph_cph: 96+26464 words, 2 attributes
+2026-11-23 18:05:33.321 lavca_test[3157:20896] LavenderMetal: draw: 42 vertices x 1 instances, prim 4, 814 words, done
+2026-11-23 18:05:33.373 lavca_test[3157:20896] LavenderMetal: draw: 6 vertices x 1 instances, prim 4, 814 words, done
+2026-11-23 18:05:33.430 lavca_test[3157:20896] LavenderMetal: draw: 6 vertices x 1 instances, prim 4, 814 words, done
+pixels: bg ff2600  g 00f900/ff2600  b 0433ff/ff2600
+PASSED
+2026-11-23 18:05:33.586 lavca_test[3157:20896] LavenderMetal: render pipeline freed (code handles 2, 2)
