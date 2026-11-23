@@ -70,6 +70,8 @@ struct lav_submit_buf { uint32_t handle, offset, dwords, pad; };
 
 struct lbuf {
 	uint32_t handle;
+	int32_t slab;                   /* -1: a buffer of the service of its own; else the slab it is carved from */
+	uint32_t page, npages;          /* within the slab */
 	uint64_t gpu;                   /* the GPU's address (= physical, below 4 GB) */
 	void * cpu;                     /* the process's mapping */
 	size_t len;
@@ -84,7 +86,7 @@ static pthread_mutex_t gGPULock = PTHREAD_MUTEX_INITIALIZER;
 #define SCRATCH_OFFSET  0x8000u
 
 static BOOL
-lavBufNew(size_t len, struct lbuf * b)
+lavBufNewDirect(size_t len, struct lbuf * b)
 {
 	struct lav_buf_new bn;
 	size_t out = sizeof(bn);
@@ -99,6 +101,7 @@ lavBufNew(size_t len, struct lbuf * b)
 		return NO;
 	}
 	b->handle = bn.handle;
+	b->slab = -1;
 	b->gpu = bn.address;
 	b->len = (size_t)bn.size;
 	b->map = 0;
@@ -115,7 +118,7 @@ lavBufNew(size_t len, struct lbuf * b)
 }
 
 static void
-lavBufFree(struct lbuf * b)
+lavBufFreeDirect(struct lbuf * b)
 {
 	struct lav_buf_free bf = { b->handle, 0 };
 
@@ -125,6 +128,125 @@ lavBufFree(struct lbuf * b)
 	IOConnectUnmapMemory64(gConn, b->handle, mach_task_self(), b->map);
 	IOConnectCallStructMethod(gConn, kLavBufFree, &bf, sizeof(bf), NULL, NULL);
 	memset(b, 0, sizeof(*b));
+}
+
+/*
+ * The service holds 64 buffers for every process, and CoreAnimation wants hundreds (each texture, buffer and pipeline takes one), so
+ * the plug-in asks the service for a few big slabs and carves its buffers out of them, a page (4 KB) at a time. A request of half a
+ * slab or more still gets a buffer of its own. Everything a slab hands out is zeroed, as a service buffer is.
+ */
+#define POOL_PAGE       4096u
+#define POOL_MAX_SLABS  48
+#define POOL_SLAB_BYTES (8u << 20)
+
+struct slab {
+	struct lbuf big;
+	uint8_t * used;                 /* one byte per page */
+	uint32_t npages;
+};
+
+static struct slab gSlabs[POOL_MAX_SLABS];
+static pthread_mutex_t gPoolLock = PTHREAD_MUTEX_INITIALIZER;
+
+/* the first run of NPAGES free pages in the slab, or -1 */
+static int64_t
+slabFind(const struct slab * sl, uint32_t npages)
+{
+	uint32_t run = 0;
+
+	for (uint32_t i = 0; i < sl->npages; i++) {
+		run = sl->used[i] ? 0 : run + 1;
+		if (run == npages) {
+			return (int64_t)i + 1 - npages;
+		}
+	}
+	return -1;
+}
+
+static BOOL
+slabAdd(void)
+{
+	/* physically contiguous memory below 4 GB is scarce on this port (the service answers kIOReturnNoMemory for 8 MB, 2 MB, soon
+	 * for 512 KB): start from the biggest slab that was last possible and only go down */
+	static const size_t sizes[5] = { POOL_SLAB_BYTES, 2u << 20, 512u << 10, 128u << 10, 32u << 10 };
+	static int first;
+
+	for (int i = 0; i < POOL_MAX_SLABS; i++) {
+		if (gSlabs[i].big.handle != 0) {
+			continue;
+		}
+		for (int k = first; k < 5; k++) {
+			if (lavBufNewDirect(sizes[k], &gSlabs[i].big)) {
+				first = k;
+				gSlabs[i].npages = (uint32_t)(gSlabs[i].big.len / POOL_PAGE);
+				gSlabs[i].used = calloc(gSlabs[i].npages, 1);
+				lavlog("slab %d: %zu bytes at GPU %#llx", i, gSlabs[i].big.len, (unsigned long long)gSlabs[i].big.gpu);
+				return gSlabs[i].used != NULL;
+			}
+		}
+		return NO;
+	}
+	return NO;
+}
+
+static BOOL
+lavBufNew(size_t len, struct lbuf * b)
+{
+	uint32_t npages = (uint32_t)((len + POOL_PAGE - 1) / POOL_PAGE);
+
+	memset(b, 0, sizeof(*b));
+	if (npages == 0) {
+		npages = 1;
+	}
+	if ((size_t)npages * POOL_PAGE >= POOL_SLAB_BYTES / 2 || gConn == 0 || gStream.handle == 0) {
+		/* big (or the stream buffer, made before the pool is usable): its own */
+		return lavBufNewDirect((size_t)npages * POOL_PAGE, b);
+	}
+	pthread_mutex_lock(&gPoolLock);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		for (int i = 0; i < POOL_MAX_SLABS; i++) {
+			struct slab * sl = &gSlabs[i];
+			int64_t at;
+
+			if (sl->big.handle == 0 || sl->npages < npages || (at = slabFind(sl, npages)) < 0) {
+				continue;
+			}
+			memset(sl->used + at, 1, npages);
+			b->handle = sl->big.handle;
+			b->slab = i;
+			b->page = (uint32_t)at;
+			b->npages = npages;
+			b->gpu = sl->big.gpu + (uint64_t)at * POOL_PAGE;
+			b->cpu = (uint8_t *)sl->big.cpu + (size_t)at * POOL_PAGE;
+			b->len = (size_t)npages * POOL_PAGE;
+			b->map = 0;
+			pthread_mutex_unlock(&gPoolLock);
+			memset(b->cpu, 0, b->len);
+			return YES;
+		}
+		if (attempt == 0 && !slabAdd()) {
+			break;
+		}
+	}
+	pthread_mutex_unlock(&gPoolLock);
+	/* the slabs could not grow (or the request is bigger than a slab of the size that was left): try a buffer of its own */
+	return lavBufNewDirect((size_t)npages * POOL_PAGE, b);
+}
+
+static void
+lavBufFree(struct lbuf * b)
+{
+	if (b->handle == 0) {
+		return;
+	}
+	if (b->slab >= 0) {
+		pthread_mutex_lock(&gPoolLock);
+		memset(gSlabs[b->slab].used + b->page, 0, b->npages);
+		pthread_mutex_unlock(&gPoolLock);
+		memset(b, 0, sizeof(*b));
+		return;
+	}
+	lavBufFreeDirect(b);
 }
 
 static BOOL
@@ -147,7 +269,7 @@ lavOpen(void)
 			gConn = 0;
 			return;
 		}
-		if (!lavBufNew(65536, &gStream)) {
+		if (!lavBufNewDirect(65536, &gStream)) {
 			gConn = 0;
 			return;
 		}

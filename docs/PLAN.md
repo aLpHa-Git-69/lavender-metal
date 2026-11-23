@@ -231,3 +231,15 @@ pipeline leaked its two service buffers and the service's 64 buffers ran out aft
 _MTLCommandQueue's own dealloc crashes (dispatch_release(NULL)) once queues really die -> own dealloc that skips it.
 Still open for backboardd: the service's LAV_BUFFERS = 64 (kernel/LavenderGPU.cpp) is far too few for CoreAnimation (textures, buffers and
 pipelines all take one), private memory for fixed_vert_*, fixed_frag_*_cp* (RT slots past 16).
+
+## M5.6 (h) done (2026-11-23): buffer suballocator in the plug-in
+
+The service holds 64 buffers for all processes; lavBufNew now carves page-sized (4 KB) pieces out of slabs and only gives a buffer of its
+own to a request of half a slab or more (and to the stream buffer). New lavmetal_test stage 21: 300 live buffers, each with its own
+bytes, all zero when new, free half and allocate again: PASSED on the phone together with every earlier stage.
+FINDING (the real blocker for backboardd): the GPU needs physically contiguous memory below 4 GB, and after boot almost none is
+left. The service answers kIOReturnNoMemory (0xe00002bd) for 8 MB and 2 MB at once, then for 512 KB after 5 of them; the pool ends
+up with 5 x 512 KB + 20 x 128 KB = 5.1 MB in total, and a 6 MB buffer is not available. A full-screen drawable or layer texture is
+~10 MB, so it cannot be allocated like this. The fix is a contiguous region reserved at boot (carve-out in the shim's memory map or an
+early IOKit reservation, in kernel/LavenderGPU.cpp / the shim) that the service hands slabs out of; or scatter-gather through the
+GPU's SMMU (the page table is currently an identity of the first 4 GB). Until then only small surfaces work.

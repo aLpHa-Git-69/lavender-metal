@@ -723,6 +723,46 @@ main(int argc, char ** argv)
 			}
 		}
 
+		/* the service holds 64 buffers: the plug-in carves the rest out of slabs */
+		if (gFailed == 0) {
+			printf("stage 21: 300 buffers alive at once, each its own bytes\n");
+			const int N = 300;
+			NSMutableArray * bufs = [NSMutableArray array];
+			size_t sizes[300];
+			int madeAll = 1, intact = 1, zeroed = 1;
+
+			for (int i = 0; i < N; i++) {
+				sizes[i] = 4096 + (size_t)(i % 7) * 4096;
+				id<MTLBuffer> b = [device newBufferWithLength:sizes[i] options:MTLResourceStorageModeShared];
+
+				if (b == nil) {
+					madeAll = 0;
+					break;
+				}
+				uint8_t * p = [b contents];
+				for (size_t k = 0; k < sizes[i]; k++) {
+					zeroed &= p[k] == 0;
+				}
+				memset(p, (int)(i & 0xff) | 1, sizes[i]);
+				[bufs addObject:b];
+			}
+			check(madeAll, "300 buffers were made");
+			check(zeroed, "every one read zero when new");
+			for (int i = 0; i < (int)[bufs count]; i++) {
+				id<MTLBuffer> bi = bufs[i];
+				uint8_t * p = [bi contents];
+				for (size_t k = 0; k < sizes[i]; k++) {
+					intact &= p[k] == (uint8_t)((i & 0xff) | 1);
+				}
+			}
+			check(intact, "none overwrote another");
+			[bufs removeObjectsInRange:NSMakeRange(0, [bufs count] / 2)];
+			id<MTLBuffer> again = [device newBufferWithLength:65536 options:MTLResourceStorageModeShared];
+			check(again != nil && ((uint8_t *)[again contents])[100] == 0, "after freeing half, a new buffer is made and is zero");
+			id<MTLBuffer> big = [device newBufferWithLength:6u << 20 options:MTLResourceStorageModeShared];
+			printf("  a 6 MB buffer of its own: %s (physically contiguous memory below 4 GB is nearly all gone after boot)\n", big != nil ? "made" : "not available");
+		}
+
 		kr = metalProps(conn, 0);
 		printf("properties off: kr %#x\n", kr);
 		IOServiceClose(conn);
