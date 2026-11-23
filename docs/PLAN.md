@@ -104,3 +104,13 @@ The open decision is the compiler (part A): (1) our own small AIR-to-A5xx backen
 Phone result (shim 340, `lavmetal_test lavk.metallib`, log in `docs/m53d-phone-compute.txt`): PASSED. fill_id (1024 words, seed by setBytes), saxpy (dispatchThreads, 512 floats), and two chained `square` dispatches in one command buffer are all exact.
 
 Refused at pipeline creation, by name in the log: textures/images/samplers, threadgroup memory, private memory, constant data tables. `dispatchThreads` rounds the grid up to whole groups. Next: M5.4 render pipeline.
+
+## M5.4 (a) done: A5xx render stream, triangle on the phone
+
+`lavgpu_tri` (userland/lavgpu_tri.c) draws a 64x64 BGRA target with the Mesa-ir3 compiled `tri_vs`/`attr_vs` + `tri_fs`
+through `lav5_build_render` (lava5r.c, sysmem/bypass, one draw): both draws PASSED (1352 covered pixels, red/green/blue
+corners, y flipped, no hang). Output in docs/m54a-phone-triangle.txt.
+
+Bug found on the way: the vertex-id-only VS reported no vertex id register (hakios looked up SYSTEM_VALUE_VERTEX_ID but ir3
+emits VERTEX_ID_ZERO_BASE); `compileStage` now falls back to the zero-base one. Next: textures/render pass API, render
+pipeline + encoder in the plug-in (LavenderMetal.m).

@@ -1,0 +1,41 @@
+tri_vs: 64 words, instrlen 2, constlen 8, 0 attributes; tri_fs: 32 words, instrlen 1, constlen 0, total_in 4; link: 2 entries, max_loc 8
+draw 1: tri_vs (vertex id), tri_fs
+  vs: vid r0.0 inst r252 pos r0.3 psize 0xfc dp_vec4 0 imm_vec4 5 nimm 3 nranges 0 constlen 8 instrlen 2 maxreg 2 half 0 dbl 0 bs 0 ssbo 0 ubos 0 mask 0 other 0
+    in[0]: slot 12 regid 0 mask 0x1 inloc 0 sysval 1 bary 0 flat 0
+    out[0]: slot 0 regid 3
+    out[1]: slot 32 regid 7
+    imm[0] = 3f4ccccd
+    imm[1] = 00000000
+    imm[2] = bf4ccccd
+  fs: vid r63.0 inst r252 pos r63.0 psize 0xfc dp_vec4 -1 imm_vec4 0 nimm 0 nranges 0 constlen 0 instrlen 1 maxreg 1 half -1 dbl 1 bs 0 ssbo 0 ubos 0 mask 0 other 0
+    in[0]: slot 32 regid 252 mask 0xf inloc 0 sysval 0 bary 1 flat 0
+    in[1]: slot 56 regid 0 mask 0x3 inloc 4 sysval 1 bary 0 flat 0
+    out[0]: slot 4 regid 2
+    fs: color r0.2 ncolor 1 ij 0 252 252 252 252 252 252 coord 252 face 252 total_in 4
+  link: cnt 2 max_loc 8 varmask 0000000f position_loc 4 psize_loc 255 interp0 00000000
+    var[0]: slot 32 regid 7 mask 0xf loc 0
+    var[1]: slot 0 regid 3 mask 0xf loc 4
+  stream of 592 words
+  submit: kr 0 fence 8 status 0, flush words c0c0c0c0 a4a4a4a4
+  target pixels: (1,1) ff202020  (32,40) ff525755  (10,55) ffe50f0a  (54,55) ff0aea0a  (32,10) ff080deb; 1352 of 4096 written
+  PASSED
+attr_vs: 32 words, 2 attributes
+draw 2: attr_vs (a vertex buffer), tri_fs
+  vs: vid r63.0 inst r252 pos r0.0 psize 0xfc dp_vec4 -1 imm_vec4 1 nimm 0 nranges 0 constlen 0 instrlen 1 maxreg 1 half -1 dbl 0 bs 0 ssbo 0 ubos 0 mask 0 other 0
+    in[0]: slot 15 regid 0 mask 0x3 inloc 0 sysval 0 bary 0 flat 1
+    in[1]: slot 16 regid 4 mask 0xf inloc 0 sysval 0 bary 0 flat 1
+    out[0]: slot 0 regid 0
+    out[1]: slot 32 regid 4
+  fs: vid r63.0 inst r252 pos r63.0 psize 0xfc dp_vec4 -1 imm_vec4 0 nimm 0 nranges 0 constlen 0 instrlen 1 maxreg 1 half -1 dbl 1 bs 0 ssbo 0 ubos 0 mask 0 other 0
+    in[0]: slot 32 regid 252 mask 0xf inloc 0 sysval 0 bary 1 flat 0
+    in[1]: slot 56 regid 0 mask 0x3 inloc 4 sysval 1 bary 0 flat 0
+    out[0]: slot 4 regid 2
+    fs: color r0.2 ncolor 1 ij 0 252 252 252 252 252 252 coord 252 face 252 total_in 4
+  link: cnt 2 max_loc 8 varmask 0000000f position_loc 4 psize_loc 255 interp0 00000000
+    var[0]: slot 32 regid 4 mask 0xf loc 0
+    var[1]: slot 0 regid 0 mask 0xf loc 4
+  stream of 592 words
+  submit: kr 0 fence 9 status 0, flush words c0c0c0c0 a4a4a4a4
+  target pixels: (1,1) ff202020  (32,40) ff525755  (10,55) ffe50f0a  (54,55) ff0aea0a  (32,10) ff080deb; 1352 of 4096 written
+  PASSED
+2 of 2 draws passed

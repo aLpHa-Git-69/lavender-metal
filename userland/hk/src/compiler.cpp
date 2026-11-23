@@ -1199,6 +1199,7 @@ bool fillStage(Translation& t, const OutputClasses& oc, Stage& s, std::string* w
         s.writesViewport = writtenOutput(v, VARYING_SLOT_VIEWPORT) >= 0;
     }
     s.vertexIdRegid = ir3_find_sysval_regid(v, SYSTEM_VALUE_VERTEX_ID);
+    if (s.vertexIdRegid == regid(63, 0)) s.vertexIdRegid = ir3_find_sysval_regid(v, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE);
     s.instanceIdRegid = ir3_find_sysval_regid(v, SYSTEM_VALUE_INSTANCE_ID);
     s.clipMask = v->clip_mask;
     s.cullMask = v->cull_mask;

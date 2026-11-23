@@ -74,6 +74,44 @@ putcode(struct buf * b, size_t off, const struct lav5_kernel * k)
 #define CG(p) (((p) >> 8) & 0xff)
 #define CR(p) (((p) >> 16) & 0xff)
 
+static void
+dump(const char * n, const struct lav5_stage * s)
+{
+	printf("  %s: vid r%u.%u inst r%u pos r%u.%u psize %#x dp_vec4 %d imm_vec4 %u nimm %u nranges %u constlen %u instrlen %u maxreg %d half %d dbl %u bs %u ssbo %u ubos %u mask %#x other %u\n",
+	    n, s->vertex_id_regid >> 2, s->vertex_id_regid & 3, s->instance_id_regid, s->position_regid >> 2, s->position_regid & 3,
+	    s->point_size_regid, s->k.dp_vec4, s->k.imm_vec4, s->k.nimm, s->k.nranges, s->k.constlen, s->k.instrlen, s->k.max_reg,
+	    s->k.max_half_reg, s->k.double_threadsize, s->k.branchstack, s->k.num_ssbos, s->k.num_ubos, s->k.buffer_mask, s->k.other_resources);
+	for (uint32_t i = 0; i < s->nin; i++) {
+		printf("    in[%u]: slot %u regid %u mask %#x inloc %u sysval %u bary %u flat %u\n", i, s->in[i].slot, s->in[i].regid,
+		    s->in[i].compmask, s->in[i].inloc, s->in[i].sysval, s->in[i].bary, s->in[i].flat);
+	}
+	for (uint32_t i = 0; i < s->nout; i++) {
+		printf("    out[%u]: slot %u regid %u\n", i, s->out[i].slot, s->out[i].regid);
+	}
+	for (uint32_t i = 0; i < s->k.nimm; i++) {
+		printf("    imm[%u] = %08x\n", i, s->k.imm[i]);
+	}
+	for (uint32_t i = 0; i < s->k.nranges; i++) {
+		printf("    range: block %u vec4 %u start %u size %u\n", s->k.ranges[i].block, s->k.ranges[i].offset_vec4, s->k.ranges[i].start_dword,
+		    s->k.ranges[i].size_dwords);
+	}
+	if (s->is_fragment) {
+		printf("    fs: color r%u.%u ncolor %u ij %u %u %u %u %u %u %u coord %u face %u total_in %u\n", s->color_regid[0] >> 2, s->color_regid[0] & 3,
+		    s->ncolor, s->ij_regid[0], s->ij_regid[1], s->ij_regid[2], s->ij_regid[3], s->ij_regid[4], s->ij_regid[5], s->ij_regid[6],
+		    s->frag_coord_regid, s->face_regid, s->total_in);
+	}
+}
+
+static void
+dumplink(const struct lav5_link * l)
+{
+	printf("  link: cnt %u max_loc %u varmask %08x position_loc %u psize_loc %u interp0 %08x\n", l->cnt, l->max_loc, l->varmask[0],
+	    l->position_loc, l->psize_loc, l->interp[0]);
+	for (uint32_t i = 0; i < l->cnt; i++) {
+		printf("    var[%u]: slot %u regid %u mask %#x loc %u\n", i, l->var[i].slot, l->var[i].regid, l->var[i].compmask, l->var[i].loc);
+	}
+}
+
 static int
 draw(const char * name, struct lav5_stage * vs, struct lav5_stage * fs, struct lav5_link * link, int attributes)
 {
@@ -93,6 +131,9 @@ draw(const char * name, struct lav5_stage * vs, struct lav5_stage * fs, struct l
 	uint32_t * rt;
 
 	printf("%s\n", name);
+	dump("vs", vs);
+	dump("fs", fs);
+	dumplink(link);
 	if (!newbuf(&stream, 65536) || !newbuf(&res, 65536)) {
 		printf("  buffers: failed\n");
 		return 0;
