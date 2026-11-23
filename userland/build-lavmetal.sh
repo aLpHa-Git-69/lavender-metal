@@ -26,4 +26,6 @@ $CC -fobjc-arc -framework Foundation -framework Metal -framework QuartzCore -fra
 codesign -s - -f out/lavmetal_test
 $CC -fobjc-arc -framework Foundation -framework Metal -framework IOKit -o out/lavqc_test lavqc_test.m
 codesign -s - -f out/lavqc_test
+$CC -fobjc-arc -framework Foundation -framework Metal -framework QuartzCore -framework CoreGraphics -framework IOKit -o out/lavca_test lavca_test.m
+codesign -s - -f out/lavca_test
 echo built
