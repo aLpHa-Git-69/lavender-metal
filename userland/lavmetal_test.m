@@ -4,6 +4,7 @@
  * The plug-in's own log is /var/root/lavmetal.log.
  *
  *   lavmetal_test        the whole check (M5.1 + M5.2), stage by stage, stopping at the first failure
+ *   lavmetal_test lavk.metallib   the same, then the compute stages (M5.3 d) with that library (userland/kernels)
  *   lavmetal_test off    only take the plug-in properties away (a crashed run leaves them set)
  *
  * Build (on the Mac): userland/build-lavmetal.sh
@@ -216,6 +217,125 @@ main(int argc, char ** argv)
 			});
 			check(ok, "the command buffer completed");
 			check(rangeIs(b, 62464, 1024, ^uint8_t(size_t i) { (void)i; return 0x33; }), "the copy sees the fill: 1024 bytes of 0x33");
+		}
+
+		/* M5.3 (d): the compute side, with the library lavk.metallib (userland/kernels) */
+		if (gFailed == 0 && argc > 1 && strcmp(argv[1], "nocompute") != 0) {
+			NSError * err = nil;
+			NSData * data = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
+			id<MTLLibrary> lib = nil;
+
+			printf("stage 8: a library from %s (%lu bytes)\n", argv[1], (unsigned long)[data length]);
+			if (data != nil) {
+				dispatch_data_t dd = dispatch_data_create([data bytes], [data length], NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+
+				lib = [device newLibraryWithData:dd error:&err];
+			}
+			check(lib != nil, "newLibraryWithData gave a library");
+			if (lib == nil && err != nil) {
+				printf("    %s\n", [[err localizedDescription] UTF8String]);
+			}
+			id<MTLFunction> fFill = [lib newFunctionWithName:@"fill_id"];
+			id<MTLFunction> fSaxpy = [lib newFunctionWithName:@"saxpy"];
+			id<MTLFunction> fSquare = [lib newFunctionWithName:@"square"];
+			check(fFill != nil && fSaxpy != nil && fSquare != nil, "newFunctionWithName: fill_id, saxpy, square");
+			id<MTLComputePipelineState> pFill = nil, pSaxpy = nil, pSquare = nil;
+			if (gFailed == 0) {
+				pFill = [device newComputePipelineStateWithFunction:fFill error:&err];
+				pSaxpy = [device newComputePipelineStateWithFunction:fSaxpy error:&err];
+				pSquare = [device newComputePipelineStateWithFunction:fSquare error:&err];
+				check(pFill != nil && pSaxpy != nil && pSquare != nil, "a compute pipeline state of each");
+				if (pFill != nil) {
+					printf("  fill_id: threadExecutionWidth %lu, maxTotalThreadsPerThreadgroup %lu\n",
+					    (unsigned long)[pFill threadExecutionWidth], (unsigned long)[pFill maxTotalThreadsPerThreadgroup]);
+				}
+			}
+			if (gFailed == 0) {
+				printf("stage 9: fill_id, 1024 threads, the seed by setBytes\n");
+				id<MTLBuffer> out = [device newBufferWithLength:4096 options:MTLResourceStorageModeShared];
+				uint32_t seed = 0x1234;
+				id<MTLCommandBuffer> cb = [queue commandBuffer];
+				id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+				[ce setComputePipelineState:pFill];
+				[ce setBuffer:out offset:0 atIndex:0];
+				[ce setBytes:&seed length:4 atIndex:1];
+				[ce dispatchThreadgroups:MTLSizeMake(16, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+				[ce endEncoding];
+				[cb commit];
+				[cb waitUntilCompleted];
+				check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+				uint32_t * o = [out contents];
+				unsigned wrong = 0;
+				for (uint32_t i = 0; i < 1024; i++) {
+					if (o[i] != i * 0x9e3779b1u + seed) {
+						if (wrong++ < 3) {
+							printf("    word %u: %08x, wanted %08x\n", i, o[i], i * 0x9e3779b1u + seed);
+						}
+					}
+				}
+				check(wrong == 0, "all 1024 words are i * 0x9e3779b1 + seed");
+			}
+			if (gFailed == 0) {
+				printf("stage 10: saxpy by dispatchThreads, y = 2 x + y over 512 floats\n");
+				id<MTLBuffer> x = [device newBufferWithLength:2048 options:MTLResourceStorageModeShared];
+				id<MTLBuffer> y = [device newBufferWithLength:2048 options:MTLResourceStorageModeShared];
+				float * xs = [x contents], * ys = [y contents];
+				float a = 2.0f;
+				for (int i = 0; i < 512; i++) {
+					xs[i] = (float)i;
+					ys[i] = 1.0f;
+				}
+				id<MTLCommandBuffer> cb = [queue commandBuffer];
+				id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+				[ce setComputePipelineState:pSaxpy];
+				[ce setBuffer:x offset:0 atIndex:0];
+				[ce setBuffer:y offset:0 atIndex:1];
+				[ce setBytes:&a length:4 atIndex:2];
+				[ce dispatchThreads:MTLSizeMake(512, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+				[ce endEncoding];
+				[cb commit];
+				[cb waitUntilCompleted];
+				check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+				unsigned wrong = 0;
+				for (int i = 0; i < 512; i++) {
+					if (ys[i] != 2.0f * (float)i + 1.0f && wrong++ < 3) {
+						printf("    y[%d] = %f, wanted %f\n", i, ys[i], 2.0f * (float)i + 1.0f);
+					}
+				}
+				check(wrong == 0, "all 512 floats are 2 i + 1");
+			}
+			if (gFailed == 0) {
+				printf("stage 11: two dispatches in one command buffer: square, then square of the result (i^4)\n");
+				id<MTLBuffer> in = [device newBufferWithLength:1024 options:MTLResourceStorageModeShared];
+				id<MTLBuffer> mid = [device newBufferWithLength:1024 options:MTLResourceStorageModeShared];
+				id<MTLBuffer> fin = [device newBufferWithLength:1024 options:MTLResourceStorageModeShared];
+				uint32_t * is = [in contents];
+				for (uint32_t i = 0; i < 256; i++) {
+					is[i] = i + 3;
+				}
+				id<MTLCommandBuffer> cb = [queue commandBuffer];
+				id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+				[ce setComputePipelineState:pSquare];
+				[ce setBuffer:in offset:0 atIndex:0];
+				[ce setBuffer:mid offset:0 atIndex:1];
+				[ce dispatchThreadgroups:MTLSizeMake(4, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+				[ce setBuffer:mid offset:0 atIndex:0];
+				[ce setBuffer:fin offset:0 atIndex:1];
+				[ce dispatchThreadgroups:MTLSizeMake(4, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+				[ce endEncoding];
+				[cb commit];
+				[cb waitUntilCompleted];
+				check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+				uint32_t * fs = [fin contents];
+				unsigned wrong = 0;
+				for (uint32_t i = 0; i < 256; i++) {
+					uint32_t v = (i + 3) * (i + 3);
+					if (fs[i] != v * v && wrong++ < 3) {
+						printf("    word %u: %08x, wanted %08x\n", i, fs[i], v * v);
+					}
+				}
+				check(wrong == 0, "all 256 words are (i + 3)^4");
+			}
 		}
 
 		kr = metalProps(conn, 0);

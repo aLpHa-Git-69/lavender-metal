@@ -26,6 +26,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <IOKit/IOKitLib.h>
+#include "lava5.h"
+#include "lavcc.h"
 #include <mach/mach.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -576,13 +578,24 @@ bufferSetLabel(id self, __unused SEL _cmd, id label)
 
 /* ---- queue, command buffer, blit encoder ---- */
 
-enum opkind { OP_FILL, OP_COPY };
+enum opkind { OP_FILL, OP_COPY, OP_DISPATCH };
+
+/* a compute dispatch as the encoder had it when it was encoded: the pipeline, what is bound, the grid */
+struct dispatch {
+	id pipeline;                            /* retained */
+	id buf[LAV5_MAX_BUFFERS];               /* retained */
+	uint64_t off[LAV5_MAX_BUFFERS];
+	uint8_t * bytes[LAV5_MAX_BUFFERS];      /* setBytes:, a copy */
+	uint32_t blen[LAV5_MAX_BUFFERS];
+	uint32_t groups[3], local[3];
+};
 
 struct op {
 	enum opkind kind;
 	id src, dst;                    /* retained buffers */
 	uint64_t srcOff, dstOff, size;
 	uint8_t value;
+	struct dispatch * disp;
 };
 
 struct cbstate {
@@ -646,6 +659,16 @@ cbFreeOps(struct cbstate * st)
 	for (size_t i = 0; i < st->nops; i++) {
 		[st->ops[i].src release];
 		[st->ops[i].dst release];
+		if (st->ops[i].disp != NULL) {
+			struct dispatch * d = st->ops[i].disp;
+
+			[d->pipeline release];
+			for (int j = 0; j < LAV5_MAX_BUFFERS; j++) {
+				[d->buf[j] release];
+				free(d->bytes[j]);
+			}
+			free(d);
+		}
 	}
 	free(st->ops);
 	st->ops = NULL;
@@ -871,6 +894,690 @@ runCopy(struct op * op)
 	return YES;
 }
 
+/* ------------------------------------------------------------------------------------------------------------------ */
+/* Compute: libraries, functions, pipeline states, the compute encoder (M5.3 step d)                                    */
+/* The shader compiler is hakios-metal's AIR front end and Mesa's ir3, in this process (lavcc.cpp); the dispatch is     */
+/* lava5.c's A5xx stream. A kernel it cannot serve (textures, threadgroup memory ...) is refused when its pipeline is    */
+/* made, by name, in the log.                                                                                           */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+static Class gLibraryClass, gFunctionClass, gPipelineClass, gComputeClass;
+static pthread_mutex_t gCCLock = PTHREAD_MUTEX_INITIALIZER;
+static struct lbuf gBytes;                  /* the bytes setBytes: gave, for the dispatch being run */
+
+struct libstate {
+	struct lavcc_lib * lib;
+	id label;
+};
+
+struct fnstate {
+	id library;                             /* retained */
+	NSString * name;
+	int type;                               /* the metallib's: 0 vertex, 1 fragment, 2 kernel */
+	id label;
+};
+
+struct pipestate {
+	id function;                            /* retained */
+	struct lav5_kernel k;
+	struct lbuf code;
+	id label;
+};
+
+struct cenc {
+	id commandBuffer;                       /* retained */
+	BOOL ended;
+	id label;
+	id pipeline;                            /* retained */
+	id buf[LAV5_MAX_BUFFERS];               /* retained */
+	uint64_t off[LAV5_MAX_BUFFERS];
+	uint8_t * bytes[LAV5_MAX_BUFFERS];
+	uint32_t blen[LAV5_MAX_BUFFERS];
+};
+
+typedef struct { uint64_t width, height, depth; } LavSize;
+
+static void
+lavError(NSError ** err, NSString * domain, const char * why)
+{
+	if (err != NULL) {
+		*err = [NSError errorWithDomain:domain code:1
+		    userInfo:@{ NSLocalizedDescriptionKey: [NSString stringWithUTF8String:why] }];
+	}
+}
+
+static id
+makeLibrary(const void * bytes, size_t size, NSError ** err)
+{
+	char why[256] = "";
+	struct lavcc_lib * lib;
+	id o;
+
+	pthread_mutex_lock(&gCCLock);
+	lib = lavcc_open(bytes, size, why, sizeof(why));
+	pthread_mutex_unlock(&gCCLock);
+	if (lib == NULL) {
+		lavlog("library of %zu bytes refused: %s", size, why);
+		lavError(err, @"MTLLibraryErrorDomain", why);
+		return nil;
+	}
+	o = makeObject(gLibraryClass, sizeof(struct libstate));
+	if (o == nil) {
+		lavcc_close(lib);
+		return nil;
+	}
+	memset(STATE(o, struct libstate), 0, sizeof(struct libstate));
+	STATE(o, struct libstate)->lib = lib;
+	lavlog("library of %zu bytes, %u functions", size, lavcc_function_count(lib));
+	return o;
+}
+
+static id
+deviceNewLibraryData(__unused id self, __unused SEL _cmd, id data, NSError ** err)
+{
+	const void * p = NULL;
+	size_t n = 0;
+	id map, lib;
+
+	if (data == nil) {
+		lavError(err, @"MTLLibraryErrorDomain", "no data");
+		return nil;
+	}
+	map = (id)dispatch_data_create_map((dispatch_data_t)data, &p, &n);
+	lib = makeLibrary(p, n, err);
+	[map release];
+	return lib;
+}
+
+static id
+deviceNewLibraryURL(__unused id self, __unused SEL _cmd, id url, NSError ** err)
+{
+	NSData * d = url != nil ? [NSData dataWithContentsOfURL:url] : nil;
+
+	if (d == nil) {
+		lavError(err, @"MTLLibraryErrorDomain", "the library file cannot be read");
+		return nil;
+	}
+	return makeLibrary([d bytes], [d length], err);
+}
+
+static id
+deviceNewLibraryFile(__unused id self, __unused SEL _cmd, id path, NSError ** err)
+{
+	NSData * d = path != nil ? [NSData dataWithContentsOfFile:path] : nil;
+
+	if (d == nil) {
+		lavError(err, @"MTLLibraryErrorDomain", "the library file cannot be read");
+		return nil;
+	}
+	return makeLibrary([d bytes], [d length], err);
+}
+
+static id
+deviceNewLibrarySource(__unused id self, __unused SEL _cmd, __unused id source, __unused id options, NSError ** err)
+{
+	lavlog("newLibraryWithSource: there is no Metal source compiler on this device");
+	lavError(err, @"MTLLibraryErrorDomain", "this device has no Metal source compiler; give it a .metallib");
+	return nil;
+}
+
+static id
+deviceNoLibrary(__unused id self, __unused SEL _cmd)
+{
+	lavlog("newDefaultLibrary: no default library");
+	return nil;
+}
+
+static id
+deviceNoLibraryBundle(__unused id self, __unused SEL _cmd, __unused id bundle, NSError ** err)
+{
+	lavlog("newDefaultLibraryWithBundle: no default library");
+	lavError(err, @"MTLLibraryErrorDomain", "no default library");
+	return nil;
+}
+
+static void
+libDealloc(id self, __unused SEL _cmd)
+{
+	struct libstate * st = STATE(self, struct libstate);
+	struct objc_super sup = { self, class_getSuperclass(gLibraryClass) };
+
+	if (st->lib != NULL) {
+		lavcc_close(st->lib);
+	}
+	[st->label release];
+	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
+}
+
+static id
+libFunctionNames(id self, __unused SEL _cmd)
+{
+	struct lavcc_lib * lib = STATE(self, struct libstate)->lib;
+	NSMutableArray * a = [NSMutableArray array];
+
+	for (unsigned i = 0; i < lavcc_function_count(lib); i++) {
+		[a addObject:[NSString stringWithUTF8String:lavcc_function_name(lib, i, NULL)]];
+	}
+	return a;
+}
+
+static id
+libNewFunction(id self, __unused SEL _cmd, id name)
+{
+	struct lavcc_lib * lib = STATE(self, struct libstate)->lib;
+	id o;
+
+	for (unsigned i = 0; name != nil && i < lavcc_function_count(lib); i++) {
+		int type = 0;
+		const char * n = lavcc_function_name(lib, i, &type);
+
+		if (strcmp(n, [name UTF8String]) == 0) {
+			struct fnstate * fs;
+
+			o = makeObject(gFunctionClass, sizeof(struct fnstate));
+			if (o == nil) {
+				return nil;
+			}
+			fs = STATE(o, struct fnstate);
+			memset(fs, 0, sizeof(*fs));
+			fs->library = [self retain];
+			fs->name = [name copy];
+			fs->type = type;
+			return o;
+		}
+	}
+	lavlog("newFunctionWithName:%s: not in the library", name != nil ? [name UTF8String] : "(nil)");
+	return nil;
+}
+
+static id
+libNewFunctionConstants(id self, SEL cmd, id name, __unused id constants, NSError ** err)
+{
+	id f = libNewFunction(self, cmd, name);
+
+	if (f == nil) {
+		lavError(err, @"MTLLibraryErrorDomain", "no such function");
+	}
+	return f;
+}
+
+static id
+libLabel(id self, __unused SEL _cmd)
+{
+	return STATE(self, struct libstate)->label;
+}
+
+static void
+libSetLabel(id self, __unused SEL _cmd, id label)
+{
+	struct libstate * st = STATE(self, struct libstate);
+
+	[st->label release];
+	st->label = [label copy];
+}
+
+static void
+fnDealloc(id self, __unused SEL _cmd)
+{
+	struct fnstate * st = STATE(self, struct fnstate);
+	struct objc_super sup = { self, class_getSuperclass(gFunctionClass) };
+
+	[st->library release];
+	[st->name release];
+	[st->label release];
+	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
+}
+
+static id
+fnName(id self, __unused SEL _cmd)
+{
+	return STATE(self, struct fnstate)->name;
+}
+
+static uint64_t
+fnType(id self, __unused SEL _cmd)
+{
+	return (uint64_t)STATE(self, struct fnstate)->type + 1;       /* MTLFunctionType: vertex 1, fragment 2, kernel 3 */
+}
+
+static id
+fnLabel(id self, __unused SEL _cmd)
+{
+	return STATE(self, struct fnstate)->label;
+}
+
+static void
+fnSetLabel(id self, __unused SEL _cmd, id label)
+{
+	struct fnstate * st = STATE(self, struct fnstate);
+
+	[st->label release];
+	st->label = [label copy];
+}
+
+static id
+makePipeline(id function, NSError ** err)
+{
+	struct fnstate * fs;
+	struct libstate * ls;
+	struct pipestate * ps;
+	char why[256] = "";
+	const char * refuse;
+	struct lav5_kernel k;
+	id o;
+	size_t codelen;
+
+	if (function == nil || !lavOpen()) {
+		lavError(err, @"MTLLibraryErrorDomain", "no function, or no GPU");
+		return nil;
+	}
+	fs = STATE(function, struct fnstate);
+	ls = STATE(fs->library, struct libstate);
+	if (fs->type != 2) {
+		lavlog("pipeline of %s: not a kernel function", [fs->name UTF8String]);
+		lavError(err, @"MTLLibraryErrorDomain", "not a kernel function");
+		return nil;
+	}
+	pthread_mutex_lock(&gCCLock);
+	if (!lavcc_compile(ls->lib, [fs->name UTF8String], &k, why, sizeof(why))) {
+		pthread_mutex_unlock(&gCCLock);
+		lavlog("pipeline of %s: the compiler refused it: %s", [fs->name UTF8String], why);
+		lavError(err, @"MTLLibraryErrorDomain", why);
+		return nil;
+	}
+	pthread_mutex_unlock(&gCCLock);
+	if ((refuse = lav5_refuse_kernel(&k)) != NULL) {
+		lavlog("pipeline of %s: %s", [fs->name UTF8String], refuse);
+		lavError(err, @"MTLLibraryErrorDomain", refuse);
+		lavcc_kernel_free(&k);
+		return nil;
+	}
+	o = makeObject(gPipelineClass, sizeof(struct pipestate));
+	if (o == nil) {
+		lavcc_kernel_free(&k);
+		return nil;
+	}
+	ps = STATE(o, struct pipestate);
+	memset(ps, 0, sizeof(*ps));
+	ps->k = k;
+	codelen = (size_t)k.instrlen * 128;
+	if (codelen < (size_t)k.nwords * 4) {
+		codelen = (size_t)k.nwords * 4;
+	}
+	pthread_mutex_lock(&gGPULock);
+	if (!lavBufNew((codelen + 4095) & ~(size_t)4095, &ps->code)) {
+		pthread_mutex_unlock(&gGPULock);
+		lavcc_kernel_free(&ps->k);
+		ps->function = nil;
+		lavError(err, @"MTLLibraryErrorDomain", "no memory for the code");
+		[o release];
+		return nil;
+	}
+	pthread_mutex_unlock(&gGPULock);
+	memset(ps->code.cpu, 0, ps->code.len);
+	memcpy(ps->code.cpu, k.words, (size_t)k.nwords * 4);
+	ps->function = [function retain];
+	lavlog("pipeline %s: %u words, instrlen %u, constlen %u, %u ssbos, %u ranges, code at GPU %#llx", k.name, k.nwords,
+	    k.instrlen, k.constlen, k.num_ssbos, k.nranges, (unsigned long long)ps->code.gpu);
+	return o;
+}
+
+static id
+deviceNewPipeline(__unused id self, __unused SEL _cmd, id function, NSError ** err)
+{
+	return makePipeline(function, err);
+}
+
+static id
+deviceNewPipelineOptions(__unused id self, __unused SEL _cmd, id function, __unused uint64_t options, id * reflection, NSError ** err)
+{
+	if (reflection != NULL) {
+		*reflection = nil;
+	}
+	return makePipeline(function, err);
+}
+
+static id
+deviceNewPipelineDescriptor(__unused id self, __unused SEL _cmd, id descriptor, __unused uint64_t options, id * reflection, NSError ** err)
+{
+	id function = ((id (*)(id, SEL))objc_msgSend)(descriptor, sel_registerName("computeFunction"));
+
+	if (reflection != NULL) {
+		*reflection = nil;
+	}
+	return makePipeline(function, err);
+}
+
+typedef void (^LavPipelineDone)(id, NSError *);
+
+static void
+deviceNewPipelineAsync(__unused id self, __unused SEL _cmd, id function, id handler)
+{
+	NSError * err = nil;
+	id p = makePipeline(function, &err);
+
+	((LavPipelineDone)handler)(p, err);
+	[p release];
+}
+
+static void
+pipeDealloc(id self, __unused SEL _cmd)
+{
+	struct pipestate * st = STATE(self, struct pipestate);
+	struct objc_super sup = { self, class_getSuperclass(gPipelineClass) };
+
+	pthread_mutex_lock(&gGPULock);
+	lavBufFree(&st->code);
+	pthread_mutex_unlock(&gGPULock);
+	lavcc_kernel_free(&st->k);
+	[st->function release];
+	[st->label release];
+	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
+}
+
+static uint64_t
+pipeMaxThreads(__unused id self, __unused SEL _cmd)
+{
+	return 256;
+}
+
+static uint64_t
+pipeWidth(id self, __unused SEL _cmd)
+{
+	return STATE(self, struct pipestate)->k.double_threadsize ? 64 : 32;
+}
+
+static uint64_t
+pipeStaticShared(__unused id self, __unused SEL _cmd)
+{
+	return 0;
+}
+
+static id
+pipeLabel(id self, __unused SEL _cmd)
+{
+	return STATE(self, struct pipestate)->label;
+}
+
+static void
+pipeSetLabel(id self, __unused SEL _cmd, id label)
+{
+	struct pipestate * st = STATE(self, struct pipestate);
+
+	[st->label release];
+	st->label = [label copy];
+}
+
+/* ---- the compute encoder ---- */
+
+static id
+cbComputeEncoder(id self, __unused SEL _cmd)
+{
+	id e = makeObject(gComputeClass, sizeof(struct cenc));
+	struct cenc * ce;
+
+	if (e == nil) {
+		return nil;
+	}
+	ce = STATE(e, struct cenc);
+	memset(ce, 0, sizeof(*ce));
+	ce->commandBuffer = [self retain];
+	return e;
+}
+
+static id
+cbComputeEncoderDispatchType(id self, SEL cmd, __unused uint64_t type)
+{
+	return cbComputeEncoder(self, cmd);
+}
+
+static id
+cbComputeEncoderDescriptor(id self, SEL cmd, __unused id descriptor)
+{
+	return cbComputeEncoder(self, cmd);
+}
+
+static void
+cencDealloc(id self, __unused SEL _cmd)
+{
+	struct cenc * ce = STATE(self, struct cenc);
+	struct objc_super sup = { self, class_getSuperclass(gComputeClass) };
+
+	for (int i = 0; i < LAV5_MAX_BUFFERS; i++) {
+		[ce->buf[i] release];
+		free(ce->bytes[i]);
+	}
+	[ce->pipeline release];
+	[ce->commandBuffer release];
+	[ce->label release];
+	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
+}
+
+static void
+cencSetPipeline(id self, __unused SEL _cmd, id pipeline)
+{
+	struct cenc * ce = STATE(self, struct cenc);
+
+	[pipeline retain];
+	[ce->pipeline release];
+	ce->pipeline = pipeline;
+}
+
+static void
+cencSetBuffer(id self, __unused SEL _cmd, id buffer, uint64_t offset, uint64_t index)
+{
+	struct cenc * ce = STATE(self, struct cenc);
+
+	if (index >= LAV5_MAX_BUFFERS) {
+		lavlog("setBuffer at index %llu: the table holds %d", (unsigned long long)index, LAV5_MAX_BUFFERS);
+		return;
+	}
+	[buffer retain];
+	[ce->buf[index] release];
+	ce->buf[index] = buffer;
+	ce->off[index] = offset;
+	free(ce->bytes[index]);
+	ce->bytes[index] = NULL;
+	ce->blen[index] = 0;
+}
+
+static void
+cencSetBufferOffset(id self, __unused SEL _cmd, uint64_t offset, uint64_t index)
+{
+	if (index < LAV5_MAX_BUFFERS) {
+		STATE(self, struct cenc)->off[index] = offset;
+	}
+}
+
+static void
+cencSetBuffers(id self, SEL cmd, const id * buffers, const uint64_t * offsets, NSRange range)
+{
+	for (NSUInteger i = 0; i < range.length; i++) {
+		cencSetBuffer(self, cmd, buffers[i], offsets[i], range.location + i);
+	}
+}
+
+static void
+cencSetBytes(id self, __unused SEL _cmd, const void * bytes, uint64_t length, uint64_t index)
+{
+	struct cenc * ce = STATE(self, struct cenc);
+
+	if (index >= LAV5_MAX_BUFFERS || length == 0 || length > 4096) {
+		lavlog("setBytes of %llu at index %llu refused", (unsigned long long)length, (unsigned long long)index);
+		return;
+	}
+	[ce->buf[index] release];
+	ce->buf[index] = nil;
+	free(ce->bytes[index]);
+	ce->bytes[index] = malloc((size_t)length);
+	memcpy(ce->bytes[index], bytes, (size_t)length);
+	ce->blen[index] = (uint32_t)length;
+}
+
+static void
+cencAddDispatch(id self, uint32_t * groups, uint32_t * local)
+{
+	struct cenc * ce = STATE(self, struct cenc);
+	struct cbstate * st = STATE(ce->commandBuffer, struct cbstate);
+	struct op * op;
+	struct dispatch * d;
+
+	if (ce->pipeline == nil) {
+		lavlog("a dispatch with no pipeline state set");
+		return;
+	}
+	op = cbAddOp(st);
+	d = calloc(1, sizeof(*d));
+	op->kind = OP_DISPATCH;
+	op->disp = d;
+	d->pipeline = [ce->pipeline retain];
+	for (int i = 0; i < LAV5_MAX_BUFFERS; i++) {
+		d->buf[i] = [ce->buf[i] retain];
+		d->off[i] = ce->off[i];
+		if (ce->bytes[i] != NULL) {
+			d->bytes[i] = malloc(ce->blen[i]);
+			memcpy(d->bytes[i], ce->bytes[i], ce->blen[i]);
+			d->blen[i] = ce->blen[i];
+		}
+	}
+	memcpy(d->groups, groups, sizeof(d->groups));
+	memcpy(d->local, local, sizeof(d->local));
+}
+
+static void
+cencDispatchGroups(id self, __unused SEL _cmd, LavSize groups, LavSize local)
+{
+	uint32_t g[3] = { (uint32_t)groups.width, (uint32_t)groups.height, (uint32_t)groups.depth };
+	uint32_t l[3] = { (uint32_t)local.width, (uint32_t)local.height, (uint32_t)local.depth };
+
+	cencAddDispatch(self, g, l);
+}
+
+/* Metal runs exactly GRID threads; this GPU runs whole groups, so the grid is rounded up to them */
+static void
+cencDispatchThreads(id self, __unused SEL _cmd, LavSize grid, LavSize local)
+{
+	uint32_t l[3] = { (uint32_t)local.width, (uint32_t)local.height, (uint32_t)local.depth };
+	uint32_t g[3];
+
+	if (l[0] == 0 || l[1] == 0 || l[2] == 0) {
+		lavlog("dispatchThreads with a threadgroup of zero");
+		return;
+	}
+	g[0] = (uint32_t)((grid.width + l[0] - 1) / l[0]);
+	g[1] = (uint32_t)((grid.height + l[1] - 1) / l[1]);
+	g[2] = (uint32_t)((grid.depth + l[2] - 1) / l[2]);
+	if (g[0] * l[0] != grid.width || g[1] * l[1] != grid.height || g[2] * l[2] != grid.depth) {
+		lavlog("dispatchThreads: a grid of %llux%llux%llu is not whole threadgroups of %ux%ux%u; the last group runs whole",
+		    (unsigned long long)grid.width, (unsigned long long)grid.height, (unsigned long long)grid.depth, l[0], l[1], l[2]);
+	}
+	cencAddDispatch(self, g, l);
+}
+
+static void
+cencEnd(id self, __unused SEL _cmd)
+{
+	STATE(self, struct cenc)->ended = YES;
+}
+
+static void
+cencNothing(__unused id self, __unused SEL _cmd, __unused uint64_t a)
+{
+}
+
+static void
+cencSharedLength(__unused id self, __unused SEL _cmd, uint64_t length, __unused uint64_t index)
+{
+	if (length != 0) {
+		lavlog("setThreadgroupMemoryLength:%llu: threadgroup memory is not served yet", (unsigned long long)length);
+	}
+}
+
+static void
+cencUseResource(__unused id self, __unused SEL _cmd, __unused id resource, __unused uint64_t usage)
+{
+}
+
+static id
+cencLabel(id self, __unused SEL _cmd)
+{
+	return STATE(self, struct cenc)->label;
+}
+
+static void
+cencSetLabel(id self, __unused SEL _cmd, id label)
+{
+	struct cenc * ce = STATE(self, struct cenc);
+
+	[ce->label release];
+	ce->label = [label copy];
+}
+
+/* run one dispatch: bind, build the stream, submit it, wait for the flush */
+static BOOL
+runDispatch(struct op * op)
+{
+	struct dispatch * d = op->disp;
+	struct pipestate * ps = STATE(d->pipeline, struct pipestate);
+	struct lav5_dispatch ld;
+	uint32_t * w;
+	const char * why = NULL;
+	size_t n, boff = 0;
+	BOOL ok;
+
+	memset(&ld, 0, sizeof(ld));
+	ld.k = &ps->k;
+	ld.code_gpu = ps->code.gpu;
+	memcpy(ld.groups, d->groups, sizeof(ld.groups));
+	memcpy(ld.local, d->local, sizeof(ld.local));
+	ld.flush_gpu = gStream.gpu + SCRATCH_OFFSET + 64;
+	ld.hole_gpu = gStream.gpu + SCRATCH_OFFSET + 128;
+	if (gBytes.handle == 0 && !lavBufNew(65536, &gBytes)) {
+		return NO;
+	}
+	for (int i = 0; i < LAV5_MAX_BUFFERS; i++) {
+		if (d->buf[i] != nil) {
+			struct bufstate * b = STATE(d->buf[i], struct bufstate);
+
+			if (d->off[i] > b->b.len) {
+				lavlog("dispatch of %s: the offset of buffer %d is past its end", ps->k.name, i);
+				return NO;
+			}
+			ld.buf[i].gpu = b->b.gpu + d->off[i];
+			ld.buf[i].cpu = (uint8_t *)b->b.cpu + d->off[i];
+			ld.buf[i].bytes = b->b.len - d->off[i];
+		} else if (d->bytes[i] != NULL) {
+			uint32_t len = (d->blen[i] + 15) & ~15u;
+
+			if (boff + len > gBytes.len) {
+				lavlog("dispatch of %s: too many setBytes", ps->k.name);
+				return NO;
+			}
+			memset((uint8_t *)gBytes.cpu + boff, 0, len);
+			memcpy((uint8_t *)gBytes.cpu + boff, d->bytes[i], d->blen[i]);
+			ld.buf[i].gpu = gBytes.gpu + boff;
+			ld.buf[i].cpu = (uint8_t *)gBytes.cpu + boff;
+			ld.buf[i].bytes = len;
+			boff += len;
+		} else if (ps->k.buffer_mask >> i & 1) {
+			lavlog("dispatch of %s: nothing bound at buffer index %d", ps->k.name, i);
+			return NO;
+		}
+	}
+	w = malloc(STREAM_WORDS * 4);
+	n = lav5_build(w, STREAM_WORDS, &ld, &why);
+	if (n == 0) {
+		lavlog("dispatch of %s refused: %s", ps->k.name, why != NULL ? why : "?");
+		free(w);
+		return NO;
+	}
+	ok = lavSubmit(w, n);
+	lavlog("dispatch of %s: %ux%ux%u groups of %ux%ux%u, %zu words, %s", ps->k.name, ld.groups[0], ld.groups[1], ld.groups[2],
+	    ld.local[0], ld.local[1], ld.local[2], n, ok ? "done" : "FAILED");
+	free(w);
+	return ok;
+}
+
 typedef void (^LavHandler)(id);
 
 static void
@@ -889,7 +1596,17 @@ cbCommit(id self, __unused SEL _cmd)
 	st->status = 3;                         /* Scheduled */
 	pthread_mutex_lock(&gGPULock);
 	for (size_t i = 0; i < st->nops && ok; i++) {
-		ok = st->ops[i].kind == OP_FILL ? runFill(&st->ops[i]) : runCopy(&st->ops[i]);
+		switch (st->ops[i].kind) {
+		case OP_FILL:
+			ok = runFill(&st->ops[i]);
+			break;
+		case OP_COPY:
+			ok = runCopy(&st->ops[i]);
+			break;
+		default:
+			ok = runDispatch(&st->ops[i]);
+			break;
+		}
 	}
 	pthread_mutex_unlock(&gGPULock);
 	cbFreeOps(st);
@@ -1042,6 +1759,82 @@ newClass(const char * name, const char * base)
 #define ADD(cls, sel, imp, types) class_addMethod(cls, sel_registerName(sel), (IMP)imp, types)
 
 static void
+registerComputeClasses(Class device)
+{
+	static const char * const lib[] = { "MTLLibrary", NULL };
+	static const char * const fn[] = { "MTLFunction", NULL };
+	static const char * const pipe[] = { "MTLComputePipelineState", NULL };
+	static const char * const comp[] = { "MTLComputeCommandEncoder", "MTLCommandEncoder", NULL };
+
+	if ((gLibraryClass = newClass("LavenderMetalLibrary", "_MTLLibrary")) != Nil) {
+		declareNamed(gLibraryClass, lib);
+		addStubForwarding(gLibraryClass);
+		ADD(gLibraryClass, "dealloc", libDealloc, "v@:");
+		ADD(gLibraryClass, "device", objDevice, "@@:");
+		ADD(gLibraryClass, "label", libLabel, "@@:");
+		ADD(gLibraryClass, "setLabel:", libSetLabel, "v@:@");
+		ADD(gLibraryClass, "functionNames", libFunctionNames, "@@:");
+		ADD(gLibraryClass, "newFunctionWithName:", libNewFunction, "@@:@");
+		ADD(gLibraryClass, "newFunctionWithName:constantValues:error:", libNewFunctionConstants, "@@:@@^@");
+		objc_registerClassPair(gLibraryClass);
+		ADD(device, "newLibraryWithData:error:", deviceNewLibraryData, "@@:@^@");
+		ADD(device, "newLibraryWithURL:error:", deviceNewLibraryURL, "@@:@^@");
+		ADD(device, "newLibraryWithFile:error:", deviceNewLibraryFile, "@@:@^@");
+		ADD(device, "newLibraryWithSource:options:error:", deviceNewLibrarySource, "@@:@@^@");
+		ADD(device, "newDefaultLibrary", deviceNoLibrary, "@@:");
+		ADD(device, "newDefaultLibraryWithBundle:error:", deviceNoLibraryBundle, "@@:@^@");
+	}
+	if ((gFunctionClass = newClass("LavenderMetalFunction", "_MTLFunction")) != Nil) {
+		declareNamed(gFunctionClass, fn);
+		addStubForwarding(gFunctionClass);
+		ADD(gFunctionClass, "dealloc", fnDealloc, "v@:");
+		ADD(gFunctionClass, "device", objDevice, "@@:");
+		ADD(gFunctionClass, "name", fnName, "@@:");
+		ADD(gFunctionClass, "functionType", fnType, "Q@:");
+		ADD(gFunctionClass, "label", fnLabel, "@@:");
+		ADD(gFunctionClass, "setLabel:", fnSetLabel, "v@:@");
+		objc_registerClassPair(gFunctionClass);
+	}
+	if ((gPipelineClass = newClass("LavenderMetalComputePipeline", "_MTLComputePipelineState")) != Nil) {
+		declareNamed(gPipelineClass, pipe);
+		addStubForwarding(gPipelineClass);
+		ADD(gPipelineClass, "dealloc", pipeDealloc, "v@:");
+		ADD(gPipelineClass, "device", objDevice, "@@:");
+		ADD(gPipelineClass, "label", pipeLabel, "@@:");
+		ADD(gPipelineClass, "setLabel:", pipeSetLabel, "v@:@");
+		ADD(gPipelineClass, "maxTotalThreadsPerThreadgroup", pipeMaxThreads, "Q@:");
+		ADD(gPipelineClass, "threadExecutionWidth", pipeWidth, "Q@:");
+		ADD(gPipelineClass, "staticThreadgroupMemoryLength", pipeStaticShared, "Q@:");
+		objc_registerClassPair(gPipelineClass);
+		ADD(device, "newComputePipelineStateWithFunction:error:", deviceNewPipeline, "@@:@^@");
+		ADD(device, "newComputePipelineStateWithFunction:options:reflection:error:", deviceNewPipelineOptions, "@@:@Q^@^@");
+		ADD(device, "newComputePipelineStateWithDescriptor:options:reflection:error:", deviceNewPipelineDescriptor, "@@:@Q^@^@");
+		ADD(device, "newComputePipelineStateWithFunction:completionHandler:", deviceNewPipelineAsync, "v@:@@?");
+	}
+	if ((gComputeClass = newClass("LavenderMetalComputeEncoder", "_MTLCommandEncoder")) != Nil) {
+		declareNamed(gComputeClass, comp);
+		addStubForwarding(gComputeClass);
+		ADD(gComputeClass, "dealloc", cencDealloc, "v@:");
+		ADD(gComputeClass, "device", objDevice, "@@:");
+		ADD(gComputeClass, "label", cencLabel, "@@:");
+		ADD(gComputeClass, "setLabel:", cencSetLabel, "v@:@");
+		ADD(gComputeClass, "setComputePipelineState:", cencSetPipeline, "v@:@");
+		ADD(gComputeClass, "setBuffer:offset:atIndex:", cencSetBuffer, "v@:@QQ");
+		ADD(gComputeClass, "setBufferOffset:atIndex:", cencSetBufferOffset, "v@:QQ");
+		ADD(gComputeClass, "setBuffers:offsets:withRange:", cencSetBuffers, "v@:r^@r^Q{_NSRange=QQ}");
+		ADD(gComputeClass, "setBytes:length:atIndex:", cencSetBytes, "v@:r^vQQ");
+		ADD(gComputeClass, "dispatchThreadgroups:threadsPerThreadgroup:", cencDispatchGroups,
+		    "v@:{_MTLSize=QQQ}{_MTLSize=QQQ}");
+		ADD(gComputeClass, "dispatchThreads:threadsPerThreadgroup:", cencDispatchThreads, "v@:{_MTLSize=QQQ}{_MTLSize=QQQ}");
+		ADD(gComputeClass, "setThreadgroupMemoryLength:atIndex:", cencSharedLength, "v@:QQ");
+		ADD(gComputeClass, "useResource:usage:", cencUseResource, "v@:@Q");
+		ADD(gComputeClass, "memoryBarrierWithScope:", cencNothing, "v@:Q");
+		ADD(gComputeClass, "endEncoding", cencEnd, "v@:");
+		objc_registerClassPair(gComputeClass);
+	}
+}
+
+static void
 registerObjectClasses(Class device)
 {
 	static const char * const buffer[] = { "MTLBuffer", "MTLResource", NULL };
@@ -1097,6 +1890,9 @@ registerObjectClasses(Class device)
 		ADD(gCommandBufferClass, "status", cbStatus, "Q@:");
 		ADD(gCommandBufferClass, "error", cbError, "@@:");
 		ADD(gCommandBufferClass, "blitCommandEncoder", cbBlitEncoder, "@@:");
+		ADD(gCommandBufferClass, "computeCommandEncoder", cbComputeEncoder, "@@:");
+		ADD(gCommandBufferClass, "computeCommandEncoderWithDispatchType:", cbComputeEncoderDispatchType, "@@:Q");
+		ADD(gCommandBufferClass, "computeCommandEncoderWithDescriptor:", cbComputeEncoderDescriptor, "@@:@");
 		ADD(gCommandBufferClass, "GPUStartTime", cbNoTime, "d@:");
 		ADD(gCommandBufferClass, "GPUEndTime", cbNoTime, "d@:");
 		ADD(gCommandBufferClass, "kernelStartTime", cbNoTime, "d@:");
@@ -1116,6 +1912,7 @@ registerObjectClasses(Class device)
 		ADD(gBlitClass, "synchronizeResource:", encNothing, "v@:@");
 		objc_registerClassPair(gBlitClass);
 	}
+	registerComputeClasses(device);
 }
 
 __attribute__((constructor)) static void

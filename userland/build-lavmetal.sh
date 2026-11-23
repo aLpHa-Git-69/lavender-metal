@@ -1,12 +1,22 @@
-#!/bin/sh
-# Build the M5.1/M5.2 pieces on the Mac (Xcode, iPhoneOS SDK):
+#!/bin/bash
+# Build the M5.1 - M5.3 pieces on the Mac (Xcode, iPhoneOS SDK, and the iOS Mesa archives tools/mesa-ios/build-mac.sh made):
 #   out/LavenderMetal.bundle   the plug-in, to be copied to /System/Library/Extensions/ on the phone
 #   out/lavmetal_test          the program that uses Metal through it
-set -e
+# The plug-in carries the shader compiler (hakios-metal's AIR front end and Mesa's ir3, in hk/ and the archives).
+set -euo pipefail
 cd "$(dirname "$0")"
+. ../tools/mesa-ios/flags.sh
 mkdir -p out/LavenderMetal.bundle
 CC="xcrun -sdk iphoneos clang -arch arm64 -target arm64-apple-ios16.0 -O1 -Wall"
-$CC -bundle -fno-objc-arc -framework Foundation -framework IOKit -o out/LavenderMetal.bundle/LavenderMetal LavenderMetal.m
+
+(cd hk && ./build-ios.sh)
+$CC -std=gnu11 -c lava5.c -o out/lava5.o
+$CXX $CXXF -Ihk/include -c lavcc.cpp -o out/lavcc.o
+$CC -fno-objc-arc -c LavenderMetal.m -o out/LavenderMetal.o
+
+LIBS="$D/src/compiler/air/libair.a $(for a in $(cat $B/archives.txt); do [ $a = src/compiler/air/libair.a ] || echo -n "$D/$a "; done)"
+$CXX -arch arm64 -isysroot "$SDK" -target arm64-apple-ios16.0 -bundle -o out/LavenderMetal.bundle/LavenderMetal \
+	out/LavenderMetal.o out/lava5.o out/lavcc.o hk/out/*.o $LIBS -framework Foundation -framework IOKit -lc++ -lz -lm
 cp LavenderMetal-Info.plist out/LavenderMetal.bundle/Info.plist
 codesign -s - -f out/LavenderMetal.bundle
 $CC -fobjc-arc -framework Foundation -framework Metal -framework IOKit -framework CoreFoundation -o out/lavmetal_test lavmetal_test.m
