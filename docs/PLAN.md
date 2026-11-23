@@ -218,3 +218,16 @@ the four `fixed_vert_*` (they use private memory). So every other vertex functio
 driver today; what is left is private memory for fixed_vert_*, and the two `fixed_frag_*_cp*` (render-target slots past 16).
 This survey is CPU only (it needs no GPU: it asks whether a pipeline can be built). The drawing tests that run on the A512 are
 lavmetal_test's stages. Next: draw real QuartzCore pipelines on the GPU through the Metal API.
+
+## M5.6 (g) done (2026-11-23): QuartzCore's own pipelines drawn on the A512 through the plug-in
+
+`lavqc_test default.metallib 3` (userland/lavqc_test.m; docs/m56g-phone-quartzcore-draws.txt): for each vertex function up to 3 fragment
+functions whose pipeline the plug-in makes, drawn once into three 64x64 targets with every buffer slot on zeroed memory and every texture
+slot on a 4x4 one. 117 pipelines made, 105 drawn to completion on the GPU (no hang, no fault: 39 vertex and 7 fragment functions),
+12 refused at draw time because they are the fixed_vert_* (private memory), 86 pairs do not link (not pairs CoreAnimation makes).
+This runs the shaders, it does not yet check the pixels (the buffers are zero, there is no CoreAnimation data).
+Bugs the sweep found in the plug-in: command buffers and encoders were returned retained (ARC callers never released them, so every
+pipeline leaked its two service buffers and the service's 64 buffers ran out after ~28 pipelines) -> now autoreleased; and
+_MTLCommandQueue's own dealloc crashes (dispatch_release(NULL)) once queues really die -> own dealloc that skips it.
+Still open for backboardd: the service's LAV_BUFFERS = 64 (kernel/LavenderGPU.cpp) is far too few for CoreAnimation (textures, buffers and
+pipelines all take one), private memory for fixed_vert_*, fixed_frag_*_cp* (RT slots past 16).

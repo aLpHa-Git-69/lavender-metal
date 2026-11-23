@@ -670,7 +670,17 @@ queueCommandBuffer(id self, __unused SEL _cmd)
 	st->handlers = [NSMutableArray new];
 	st->scheduled = [NSMutableArray new];
 	st->status = 1;                         /* Enqueued */
-	return o;
+	return [o autorelease];                 /* not a new/copy method: the caller owns nothing */
+}
+
+/* _MTLCommandQueue's own dealloc releases a dispatch queue this object never made (-> dispatch_release(NULL)): skip it,
+ * go to the class above it */
+static void
+queueDealloc(id self, __unused SEL _cmd)
+{
+	struct objc_super sup = { self, class_getSuperclass(class_getSuperclass(gQueueClass)) };
+
+	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
 }
 
 static id
@@ -759,7 +769,7 @@ cbBlitEncoder(id self, __unused SEL _cmd)
 	es = STATE(e, struct encstate);
 	memset(es, 0, sizeof(*es));
 	es->commandBuffer = [self retain];
-	return e;
+	return [e autorelease];
 }
 
 static void
@@ -1369,7 +1379,7 @@ cbComputeEncoder(id self, __unused SEL _cmd)
 	ce = STATE(e, struct cenc);
 	memset(ce, 0, sizeof(*ce));
 	ce->commandBuffer = [self retain];
-	return e;
+	return [e autorelease];
 }
 
 static id
@@ -1937,6 +1947,7 @@ registerObjectClasses(Class device)
 		addStubForwarding(gQueueClass);
 		ADD(gQueueClass, "device", objDevice, "@@:");
 		ADD(gQueueClass, "label", queueLabel, "@@:");
+		ADD(gQueueClass, "dealloc", queueDealloc, "v@:");
 		ADD(gQueueClass, "commandBuffer", queueCommandBuffer, "@@:");
 		ADD(gQueueClass, "commandBufferWithUnretainedReferences", queueCommandBuffer, "@@:");
 		objc_registerClassPair(gQueueClass);

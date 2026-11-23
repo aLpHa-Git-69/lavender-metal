@@ -460,6 +460,7 @@ rpDealloc(id self, __unused SEL _cmd)
 	struct rpipe * st = STATE(self, struct rpipe);
 	struct objc_super sup = { self, class_getSuperclass(gRenderPipeClass) };
 
+	lavlog("render pipeline freed (code handles %u, %u)", st->vcode.handle, st->fcode.handle);
 	pthread_mutex_lock(&gGPULock);
 	if (st->vcode.handle != 0) {
 		lavBufFree(&st->vcode);
@@ -581,7 +582,7 @@ cbRenderEncoder(id self, __unused SEL _cmd, id passdesc)
 		op->clear[2] = c.b;
 		op->clear[3] = c.a;
 	}
-	return e;
+	return [e autorelease];
 }
 
 static void

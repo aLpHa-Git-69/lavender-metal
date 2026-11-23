@@ -1,0 +1,218 @@
+39 vertex functions, 95 fragment functions
+NOPIPE std_vert0_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   std_vert0_lpf + downsample_4_frag_lpf
+DRAW   std_vert0_lpf + downsample_8_frag_lpf
+DRAW   std_vert0_lpf + downsample_6_frag_lpf
+NOPIPE std_vert1_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 34 (VAR2), which the vertex stage does not write
+DRAW   std_vert1_lpf + downsample_4_frag_lpf
+DRAW   std_vert1_lpf + downsample_8_frag_lpf
+DRAW   std_vert1_lpf + downsample_6_frag_lpf
+DRAW   upsample_vert_lpf + upsample_frag_lpf
+DRAW   upsample_vert_lpf + downsample_4_frag_lpf
+DRAW   upsample_vert_lpf + downsample_8_frag_lpf
+NOPIPE downsample_blur_vert_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   downsample_blur_vert_lpf + downsample_4_frag_lpf
+DRAW   downsample_blur_vert_lpf + downsample_8_frag_lpf
+DRAW   downsample_blur_vert_lpf + downsample_6_frag_lpf
+NOPIPE asg_vert_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   asg_vert_lpf + downsample_4_frag_lpf
+DRAW   asg_vert_lpf + downsample_8_frag_lpf
+DRAW   asg_vert_lpf + downsample_6_frag_lpf
+NOPIPE variable_blur_vert_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 34 (VAR2), which the vertex stage does not write
+DRAW   variable_blur_vert_lpf + downsample_4_frag_lpf
+DRAW   variable_blur_vert_lpf + downsample_8_frag_lpf
+DRAW   variable_blur_vert_lpf + downsample_6_frag_lpf
+DRAW   path_cubic_vert_0_lpf + upsample_frag_lpf
+DRAW   path_cubic_vert_0_lpf + downsample_4_frag_lpf
+DRAW   path_cubic_vert_0_lpf + downsample_8_frag_lpf
+DRAW   path_cubic_vert_1_lpf + upsample_frag_lpf
+DRAW   path_cubic_vert_1_lpf + downsample_4_frag_lpf
+DRAW   path_cubic_vert_1_lpf + downsample_8_frag_lpf
+DRAW   path_rect_vert_lpf + upsample_frag_lpf
+DRAW   path_rect_vert_lpf + downsample_4_frag_lpf
+DRAW   path_rect_vert_lpf + downsample_8_frag_lpf
+DRAW   path_stroke_line_vert_lpf + upsample_frag_lpf
+DRAW   path_stroke_line_vert_lpf + downsample_4_frag_lpf
+DRAW   path_stroke_line_vert_lpf + downsample_8_frag_lpf
+NOPIPE path_stroke_curve_vert_0_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   path_stroke_curve_vert_0_lpf + downsample_4_frag_lpf
+DRAW   path_stroke_curve_vert_0_lpf + downsample_8_frag_lpf
+DRAW   path_stroke_curve_vert_0_lpf + downsample_6_frag_lpf
+NOPIPE path_stroke_curve_vert_1_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   path_stroke_curve_vert_1_lpf + downsample_4_frag_lpf
+DRAW   path_stroke_curve_vert_1_lpf + downsample_8_frag_lpf
+DRAW   path_stroke_curve_vert_1_lpf + downsample_6_frag_lpf
+DRAW   path_stroke_miter_join_vert_lpf + upsample_frag_lpf
+DRAW   path_stroke_miter_join_vert_lpf + downsample_4_frag_lpf
+DRAW   path_stroke_miter_join_vert_lpf + downsample_8_frag_lpf
+DRAW   path_stroke_round_join_vert_lpf + upsample_frag_lpf
+DRAW   path_stroke_round_join_vert_lpf + downsample_4_frag_lpf
+DRAW   path_stroke_round_join_vert_lpf + downsample_8_frag_lpf
+NOPIPE path_blit_vert_lpf + upsample_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + downsample_4_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + downsample_8_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + downsample_6_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + asg_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + asg_75_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + asg_50_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + downsample_blur_2_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + downsample_blur_4_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + narrow_blur_7_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + narrow_blur_11_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + narrow_blur_15_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + narrow_blur_19_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + narrow_blur_23_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + narrow_blur_27_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + single_pass_blur_3_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + variable_blur_downsample_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + variable_blur_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + axial_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + radial_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + radial_complex_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + conic_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lpf + alpha_threshold_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+DRAW   path_blit_vert_lpf + p3_clamp_lpf
+DRAW   path_blit_vert_lpf + alpha_linear_premultiply_lpf
+NOPIPE path_blit_vert_lpf + home_affordance_base_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   path_blit_vert_lpf + edr_scale_lpf
+DRAW   buffer_image_blit_vert_lpf + upsample_frag_lpf
+DRAW   buffer_image_blit_vert_lpf + downsample_4_frag_lpf
+DRAW   buffer_image_blit_vert_lpf + downsample_8_frag_lpf
+DRAW   stroke_line_vert_lpf + upsample_frag_lpf
+DRAW   stroke_line_vert_lpf + downsample_4_frag_lpf
+DRAW   stroke_line_vert_lpf + downsample_8_frag_lpf
+DRAW   fixed_vert_lph_spc + upsample_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lph_spc + downsample_4_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lph_spc + downsample_8_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lph_gen + upsample_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lph_gen + downsample_4_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lph_gen + downsample_8_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lpf_spc + upsample_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lpf_spc + downsample_4_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lpf_spc + downsample_8_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lpf_gen + upsample_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lpf_gen + downsample_4_frag_lpf
+  FAILED: command buffer status 5
+DRAW   fixed_vert_lpf_gen + downsample_8_frag_lpf
+  FAILED: command buffer status 5
+NOPIPE std_vert0_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   std_vert0_lph + downsample_4_frag_lpf
+DRAW   std_vert0_lph + downsample_8_frag_lpf
+DRAW   std_vert0_lph + downsample_6_frag_lpf
+NOPIPE std_vert1_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 34 (VAR2), which the vertex stage does not write
+DRAW   std_vert1_lph + downsample_4_frag_lpf
+DRAW   std_vert1_lph + downsample_8_frag_lpf
+DRAW   std_vert1_lph + downsample_6_frag_lpf
+DRAW   upsample_vert_lph + upsample_frag_lpf
+DRAW   upsample_vert_lph + downsample_4_frag_lpf
+DRAW   upsample_vert_lph + downsample_8_frag_lpf
+NOPIPE downsample_blur_vert_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   downsample_blur_vert_lph + downsample_4_frag_lpf
+DRAW   downsample_blur_vert_lph + downsample_8_frag_lpf
+DRAW   downsample_blur_vert_lph + downsample_6_frag_lpf
+NOPIPE asg_vert_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   asg_vert_lph + downsample_4_frag_lpf
+DRAW   asg_vert_lph + downsample_8_frag_lpf
+DRAW   asg_vert_lph + downsample_6_frag_lpf
+NOPIPE variable_blur_vert_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 34 (VAR2), which the vertex stage does not write
+DRAW   variable_blur_vert_lph + downsample_4_frag_lpf
+DRAW   variable_blur_vert_lph + downsample_8_frag_lpf
+DRAW   variable_blur_vert_lph + downsample_6_frag_lpf
+DRAW   path_cubic_vert_0_lph + upsample_frag_lpf
+DRAW   path_cubic_vert_0_lph + downsample_4_frag_lpf
+DRAW   path_cubic_vert_0_lph + downsample_8_frag_lpf
+DRAW   path_cubic_vert_1_lph + upsample_frag_lpf
+DRAW   path_cubic_vert_1_lph + downsample_4_frag_lpf
+DRAW   path_cubic_vert_1_lph + downsample_8_frag_lpf
+DRAW   path_rect_vert_lph + upsample_frag_lpf
+DRAW   path_rect_vert_lph + downsample_4_frag_lpf
+DRAW   path_rect_vert_lph + downsample_8_frag_lpf
+DRAW   path_stroke_line_vert_lph + upsample_frag_lpf
+DRAW   path_stroke_line_vert_lph + downsample_4_frag_lpf
+DRAW   path_stroke_line_vert_lph + downsample_8_frag_lpf
+NOPIPE path_stroke_curve_vert_0_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   path_stroke_curve_vert_0_lph + downsample_4_frag_lpf
+DRAW   path_stroke_curve_vert_0_lph + downsample_8_frag_lpf
+DRAW   path_stroke_curve_vert_0_lph + downsample_6_frag_lpf
+NOPIPE path_stroke_curve_vert_1_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   path_stroke_curve_vert_1_lph + downsample_4_frag_lpf
+DRAW   path_stroke_curve_vert_1_lph + downsample_8_frag_lpf
+DRAW   path_stroke_curve_vert_1_lph + downsample_6_frag_lpf
+DRAW   path_stroke_miter_join_vert_lph + upsample_frag_lpf
+DRAW   path_stroke_miter_join_vert_lph + downsample_4_frag_lpf
+DRAW   path_stroke_miter_join_vert_lph + downsample_8_frag_lpf
+DRAW   path_stroke_round_join_vert_lph + upsample_frag_lpf
+DRAW   path_stroke_round_join_vert_lph + downsample_4_frag_lpf
+DRAW   path_stroke_round_join_vert_lph + downsample_8_frag_lpf
+NOPIPE path_blit_vert_lph + upsample_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + downsample_4_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + downsample_8_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + downsample_6_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + asg_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + asg_75_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + asg_50_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + downsample_blur_2_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + downsample_blur_4_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + narrow_blur_7_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + narrow_blur_11_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + narrow_blur_15_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + narrow_blur_19_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + narrow_blur_23_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + narrow_blur_27_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + single_pass_blur_3_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + variable_blur_downsample_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + variable_blur_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + axial_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + radial_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + radial_complex_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + conic_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE path_blit_vert_lph + alpha_threshold_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+DRAW   path_blit_vert_lph + p3_clamp_lpf
+DRAW   path_blit_vert_lph + alpha_linear_premultiply_lpf
+NOPIPE path_blit_vert_lph + home_affordance_base_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   path_blit_vert_lph + edr_scale_lpf
+DRAW   buffer_image_blit_vert_lph + upsample_frag_lpf
+DRAW   buffer_image_blit_vert_lph + downsample_4_frag_lpf
+DRAW   buffer_image_blit_vert_lph + downsample_8_frag_lpf
+DRAW   stroke_line_vert_lph + upsample_frag_lpf
+DRAW   stroke_line_vert_lph + downsample_4_frag_lpf
+DRAW   stroke_line_vert_lph + downsample_8_frag_lpf
+NOPIPE read_surf_vert + upsample_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + downsample_4_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + downsample_8_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + downsample_6_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + asg_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + asg_75_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + asg_50_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + downsample_blur_2_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + downsample_blur_4_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + narrow_blur_7_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + narrow_blur_11_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + narrow_blur_15_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + narrow_blur_19_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + narrow_blur_23_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + narrow_blur_27_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + single_pass_blur_3_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + variable_blur_downsample_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + variable_blur_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + axial_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + radial_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + radial_complex_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + conic_shading_frag_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+NOPIPE read_surf_vert + alpha_threshold_lpf: link: the fragment stage reads varying slot 32 (VAR0), which the vertex stage does not write
+DRAW   read_surf_vert + p3_clamp_lpf
+DRAW   read_surf_vert + alpha_linear_premultiply_lpf
+NOPIPE read_surf_vert + home_affordance_base_lpf: link: the fragment stage reads varying slot 33 (VAR1), which the vertex stage does not write
+DRAW   read_surf_vert + edr_scale_lpf
+drawn 105, failed 12, no pipeline 86
+FAILED

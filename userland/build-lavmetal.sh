@@ -24,4 +24,6 @@ strip -x out/LavenderMetal.bundle/LavenderMetal 2>/dev/null
 codesign -s - -f out/LavenderMetal.bundle
 $CC -fobjc-arc -framework Foundation -framework Metal -framework QuartzCore -framework IOSurface -framework IOKit -framework CoreFoundation -o out/lavmetal_test lavmetal_test.m
 codesign -s - -f out/lavmetal_test
+$CC -fobjc-arc -framework Foundation -framework Metal -framework IOKit -o out/lavqc_test lavqc_test.m
+codesign -s - -f out/lavqc_test
 echo built
