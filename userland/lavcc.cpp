@@ -258,7 +258,12 @@ extern "C" int lavcc_probe(struct lavcc_lib* l, unsigned i, char* summary, size_
         else if (r.kind == Resource::kImage) img++;
         else buf++;
     }
-    snprintf(summary, ssize, "%s %u words, %u buffers %u textures %u samplers %u images", fn.type == MetalFunction::kVertex ? "vertex" : "fragment",
-             s->stage.k.numWords, buf, tex, smp, img);
+    lav5_stage ls;
+    memset(&ls, 0, sizeof ls);
+    flatten_stage(s->stage, s->resources, &ls);
+    const char* refuse = lav5_refuse_stage(&ls);
+    snprintf(summary, ssize, "%s %u words, %u buffers %u textures %u samplers %u images; ssbos %u ubos %u ncolor %u%s%s", fn.type == MetalFunction::kVertex ? "vertex" : "fragment",
+             s->stage.k.numWords, buf, tex, smp, img, ls.k.num_ssbos, ls.k.num_ubos, ls.ncolor, refuse ? " -- DRIVER REFUSES: " : "", refuse ? refuse : "");
+    lavcc_stage_free(&ls);
     return 1;
 }

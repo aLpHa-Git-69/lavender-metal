@@ -258,6 +258,31 @@ emit_stage_consts(struct st * s, enum a4xx_state_block sb, const struct lav5_ker
 	return NULL;
 }
 
+const char *
+lav5_refuse_stage(const struct lav5_stage * s)
+{
+	if (!s->is_fragment) {
+		if (s->clip_mask || s->cull_mask || VALIDREG(s->point_size_regid)) {
+			return "the vertex stage writes clip distances or a point size";
+		}
+		if (!VALIDREG(s->position_regid)) {
+			return "the vertex stage writes no position";
+		}
+	} else if (s->ncolor != 1) {
+		return "the fragment stage does not write exactly one colour";
+	}
+	if (s->k.num_ssbos) {
+		return "the stage reads or writes device buffers (SSBO)";
+	}
+	if (s->k.shared_size || s->k.pvtmem_size) {
+		return "the stage uses threadgroup or private memory";
+	}
+	if (s->k.const_data_size) {
+		return "the stage has a constant data table";
+	}
+	return NULL;
+}
+
 size_t
 lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, const char ** why)
 {

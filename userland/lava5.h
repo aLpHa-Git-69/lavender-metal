@@ -156,6 +156,9 @@ struct lav5_render {
 };
 
 /* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */
+/* why one stage cannot be drawn with, or NULL (checked again by lav5_build_render) */
+const char * lav5_refuse_stage(const struct lav5_stage * s);
+
 size_t lav5_build_render(uint32_t * out, size_t cap, const struct lav5_render * r, const char ** why);
 
 /* the words of the stream; returns how many, 0 with *why set (a string literal) when the dispatch is refused */

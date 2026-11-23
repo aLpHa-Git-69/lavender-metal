@@ -163,3 +163,18 @@ One bug on the way: TEX_CONST_3 ARRAY_PITCH must be a multiple of 4096 (the gene
 Not yet: constexpr (inline) samplers, vertex-stage sampling, mip chains, other pixel formats (CoreAnimation uses many), depth,
 indexed draws, MSAA, loads from the target (LoadAction.load on non-surface targets works since memory is kept), the render target as
 a sampled texture in the same pass. Next: run QuartzCore's own pipelines through the plug-in and log what is refused.
+
+## M5.6 (b) (2026-11-22): what the driver still refuses of QuartzCore's shaders
+
+lavsurvey now also asks the render builder's per-stage rules (`lav5_refuse_stage`); docs/m56b-survey-driver-refusals.txt.
+Of the 135 stage functions that compile, **70 are refused by the driver** (65 are usable as they are):
+- 32 vertex functions read device buffers (SSBO): the whole `path_*_vert` family and `fixed_vert_*` (their vertex data is not in a
+  vertex descriptor). Needs SSBO in graphics stages: descriptors for the VS (SB4_SSBO, as emit_ssbos does for compute) and the
+  address arithmetic ir3 already generated.
+- 34 fragment functions write 0, 2 or 3 colours (`path_*_frag`, `*_shading_frag`, `inplace_copy`, `attachment_clear_frag`,
+  `buffer_image_blit_frag`): multiple render targets (and 0 = depth/stencil-only). Needs MRT in the builder, the pass and
+  the encoder, and the other formats those targets use.
+- 4 vertex functions (`fixed_vert_*`) write a point size or clip distances.
+Usable today: the standard layer pipeline pieces without those (`std_vert0/1`, blur, upsample, downsample, luma, p3 clamp, ...).
+Order: SSBO in the VS, then MRT, then point size/clip; each checked with a small Metal test like stages 12-16 before the device
+is enabled for backboardd.
