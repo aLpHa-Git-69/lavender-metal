@@ -1,0 +1,15 @@
+1795399667 LavenderMetal[1761]: loaded: LavenderMetalDevice and its objects are registered (base _MTLDevice)
+1795399667 LavenderMetal[1761]: a device for the accelerator port 5123 (made)
+1795399667 LavenderMetal[1761]: asked and not implemented: -featureProfile (LavenderMetalDevice; returns 8 bytes, answered with zero)
+1795399667 LavenderMetal[1761]: the GPU service is open; stream buffer at GPU 0xa3bbc000
+1795399667 LavenderMetal[1761]: fill: 1 head and 0 tail bytes by the CPU
+1795399668 LavenderMetal[1761]: copy of 20000 bytes entirely by the CPU (too small or misaligned)
+1795399668 LavenderMetal[1761]: copy: 59 head and 37 tail bytes by the CPU
+1795399668 LavenderMetal[1761]: library of 10804 bytes, 3 functions
+1795399668 LavenderMetal[1761]: pipeline fill_id: 64 words, instrlen 2, constlen 12, 1 ssbos, 1 ranges, code at GPU 0xc3af8000
+1795399668 LavenderMetal[1761]: pipeline saxpy: 64 words, instrlen 2, constlen 8, 2 ssbos, 1 ranges, code at GPU 0xd67b4000
+1795399668 LavenderMetal[1761]: pipeline square: 64 words, instrlen 2, constlen 4, 2 ssbos, 0 ranges, code at GPU 0xac320000
+1795399668 LavenderMetal[1761]: dispatch of fill_id: 16x1x1 groups of 64x1x1, 170 words, done
+1795399668 LavenderMetal[1761]: dispatch of saxpy: 8x1x1 groups of 64x1x1, 166 words, done
+1795399668 LavenderMetal[1761]: dispatch of square: 4x1x1 groups of 64x1x1, 146 words, done
+1795399668 LavenderMetal[1761]: dispatch of square: 4x1x1 groups of 64x1x1, 146 words, done

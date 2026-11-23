@@ -96,3 +96,11 @@ The open decision is the compiler (part A): (1) our own small AIR-to-A5xx backen
 - Every driver feature is behind a boot-arg and off by default; the stock shim keeps booting.
 - One variable per flash; keep the log ring and live log on.
 - Prefer the fake GPU and host tests; flash only to answer a question the host cannot.
+
+### M5.3 step (d) done: Metal compute on the phone (22 Nov 2026)
+
+`userland/LavenderMetal.m` now serves `newLibraryWithData:/URL:/File:`, `newFunctionWithName:`, `newComputePipelineStateWithFunction:` (+ options, descriptor, handler forms) and `computeCommandEncoder` (`setComputePipelineState:`, `setBuffer:`, `setBuffers:`, `setBytes:`, `dispatchThreadgroups:`, `dispatchThreads:`). The compiler (`lavcc.cpp`: hakios AIR front end + Mesa ir3, gpu 512) runs inside the plug-in; `lava5.c` builds the A5xx stream (Mesa fd5 order, headers in `userland/a5xx`), code in a per-pipeline buffer loaded indirect, constants (UBO ranges from a CPU snapshot, immediates, driver params), SSBO table, and a final CACHE_FLUSH_TS. A dispatch is a command-buffer op run synchronously at commit.
+
+Phone result (shim 340, `lavmetal_test lavk.metallib`, log in `docs/m53d-phone-compute.txt`): PASSED. fill_id (1024 words, seed by setBytes), saxpy (dispatchThreads, 512 floats), and two chained `square` dispatches in one command buffer are all exact.
+
+Refused at pipeline creation, by name in the log: textures/images/samplers, threadgroup memory, private memory, constant data tables. `dispatchThreads` rounds the grid up to whole groups. Next: M5.4 render pipeline.
