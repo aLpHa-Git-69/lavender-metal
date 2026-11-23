@@ -92,6 +92,9 @@ registerRenderClasses(Class device)
 		ADD(gRenderClass, "drawPrimitives:vertexStart:vertexCount:", rencDraw, "v@:QQQ");
 		ADD(gRenderClass, "drawPrimitives:vertexStart:vertexCount:instanceCount:", rencDrawInstanced, "v@:QQQQ");
 		ADD(gRenderClass, "drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:", rencDrawBase, "v@:QQQQQ");
+		ADD(gRenderClass, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", rencDrawIndexed, "v@:QQQ@Q");
+		ADD(gRenderClass, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:", rencDrawIndexedInst, "v@:QQQ@QQ");
+		ADD(gRenderClass, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:", rencDrawIndexedBase, "v@:QQQ@QQqQ");
 		ADD(gRenderClass, "endEncoding", rencEnd, "v@:");
 		objc_registerClassPair(gRenderClass);
 		ADD(gCommandBufferClass, "renderCommandEncoderWithDescriptor:", cbRenderEncoder, "@@:@");

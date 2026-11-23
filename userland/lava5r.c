@@ -814,11 +814,25 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	set(s, REG_A5XX_GRAS_SC_CNTL, 0x8);
 
 	/* the draw */
-	pkt7(s, CP_DRAW_INDX_OFFSET, 3);
-	out(s, CP_DRAW_INDX_OFFSET_0_PRIM_TYPE(r->prim) | CP_DRAW_INDX_OFFSET_0_SOURCE_SELECT(DI_SRC_SEL_AUTO_INDEX) |
-	    CP_DRAW_INDX_OFFSET_0_INDEX_SIZE(INDEX4_SIZE_32_BIT) | CP_DRAW_INDX_OFFSET_0_VIS_CULL(IGNORE_VISIBILITY));
-	out(s, r->instances);
-	out(s, r->count);
+	if (r->index_gpu != 0) {
+		/* fd5_draw.c: instances, count, first index 0, the index buffer's address and the indices it holds */
+		pkt7(s, CP_DRAW_INDX_OFFSET, 7);
+		out(s, CP_DRAW_INDX_OFFSET_0_PRIM_TYPE(r->prim) | CP_DRAW_INDX_OFFSET_0_SOURCE_SELECT(DI_SRC_SEL_DMA) |
+		    CP_DRAW_INDX_OFFSET_0_INDEX_SIZE(r->index_size == 1 ? INDEX4_SIZE_16_BIT : INDEX4_SIZE_32_BIT) |
+		    CP_DRAW_INDX_OFFSET_0_VIS_CULL(IGNORE_VISIBILITY));
+		out(s, r->instances);
+		out(s, r->count);
+		out(s, 0);
+		out(s, (uint32_t)r->index_gpu);
+		out(s, (uint32_t)(r->index_gpu >> 32));
+		out(s, r->index_max);
+	} else {
+		pkt7(s, CP_DRAW_INDX_OFFSET, 3);
+		out(s, CP_DRAW_INDX_OFFSET_0_PRIM_TYPE(r->prim) | CP_DRAW_INDX_OFFSET_0_SOURCE_SELECT(DI_SRC_SEL_AUTO_INDEX) |
+		    CP_DRAW_INDX_OFFSET_0_INDEX_SIZE(INDEX4_SIZE_32_BIT) | CP_DRAW_INDX_OFFSET_0_VIS_CULL(IGNORE_VISIBILITY));
+		out(s, r->instances);
+		out(s, r->count);
+	}
 
 	/* fd5_emit_sysmem_fini, then the flush with a timestamp so that memory holds the pixels */
 	pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);

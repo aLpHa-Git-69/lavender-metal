@@ -152,6 +152,9 @@ struct lav5_render {
 	struct lav5_binding vs_buf[LAV5_MAX_BUFFERS], fs_buf[LAV5_MAX_BUFFERS];
 	uint32_t prim;                              /* a5xx pc_di_primtype */
 	uint32_t first, count, instances, base_instance;
+	uint64_t index_gpu;                         /* 0: not indexed; else the first index */
+	uint32_t index_size;                        /* 1: 16-bit, 2: 32-bit (a4xx_index_size) */
+	uint32_t index_max;                         /* indices from index_gpu to the end of the buffer */
 	float viewport[6];                          /* x, y, width, height, znear, zfar (Metal's, top-left origin) */
 	uint32_t scissor[4];                        /* x, y, width, height */
 	uint32_t cull;                              /* 0 none, 1 front, 2 back */

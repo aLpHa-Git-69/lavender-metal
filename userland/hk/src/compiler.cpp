@@ -807,7 +807,7 @@ bool lowerFbRead(nir_shader* nir, uint8_t fbTargets[kMaxTextureSlots], std::stri
         }
         nir_metadata_preserve(impl, nir_metadata_control_flow);
     }
-    if (!ok) return refuse(why, std::string(nir->info.name ? nir->info.name : "the function") + " reads its render targets through slots past the 16 the table holds");
+    if (!ok) return refuse(why, std::string(nir->info.name ? nir->info.name : "the function") + " reads its render targets through slots past the 16 the table holds (textures used "+std::to_string(unsigned(nir->info.textures_used[0]))+", next free "+std::to_string(nextFree)+")");
     return true;
 }
 

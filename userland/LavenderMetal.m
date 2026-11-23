@@ -728,6 +728,9 @@ struct draw {
 	uint8_t * fbytes[LAV5_MAX_BUFFERS];
 	uint32_t fblen[LAV5_MAX_BUFFERS];
 	uint32_t prim, first, count, instances, base_instance;
+	id ibuf;                                /* retained: the index buffer of an indexed draw */
+	uint64_t ioff;
+	uint32_t isize;                         /* 0 not indexed, 1 16-bit, 2 32-bit */
 	float viewport[6];
 	uint32_t scissor[4];
 	uint32_t cull, front_cw;
@@ -832,6 +835,8 @@ cbFreeOps(struct cbstate * st)
 		[st->ops[i].dst release];
 		if (st->ops[i].draw != NULL) {
 			struct draw * w = st->ops[i].draw;
+
+			[w->ibuf release];
 
 			[w->pipeline release];
 			[w->target release];

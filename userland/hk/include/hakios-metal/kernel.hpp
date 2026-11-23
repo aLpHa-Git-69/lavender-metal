@@ -55,7 +55,7 @@ constexpr uint32_t kNoConstRegid = 0xff;
 // fewer refused what ir3 had compiled (Resident Evil 4's tonemap and deferred lighting push 9 and 11).
 constexpr uint32_t kMaxUboRanges = 32;
 constexpr uint32_t kMaxBufs = 4;
-constexpr uint32_t kMaxTextureSlots = 16;
+constexpr uint32_t kMaxTextureSlots = 20;   // 16 sampled plus room for the framebuffer-fetch targets (lowerFbRead): fixed_frag_lph_cph samples all 16
 
 // What one Metal texture index is to a kernel, as its instructions use it (see Kernel::textures).
 enum KernelTextureKind : uint8_t {

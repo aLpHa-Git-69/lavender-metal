@@ -297,6 +297,9 @@ vertexFormat(uint64_t f, uint32_t * fmt, uint32_t * isfloat)
 	case 30: *fmt = 116; return YES;
 	case 31: *fmt = 130; return YES;
 	case 9: *fmt = 48; return YES;
+	case 25: *fmt = 69; return YES;
+	case 26: *fmt = 90; return YES;
+	case 27: *fmt = 98; return YES;
 	}
 	return NO;
 }
@@ -859,7 +862,8 @@ rencIgnoreObj(__unused id self, __unused SEL _cmd, __unused id a)
 }
 
 static void
-rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t instances, uint64_t base)
+rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t instances, uint64_t base, id ibuf, uint64_t ioff,
+    uint32_t isize)
 {
 	struct renc * re = STATE(self, struct renc);
 	struct op * op;
@@ -896,6 +900,9 @@ rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t ins
 		}
 	}
 	d->prim = prims[type];
+	d->ibuf = [ibuf retain];
+	d->ioff = ioff;
+	d->isize = isize;
 	d->first = (uint32_t)first;
 	d->count = (uint32_t)count;
 	d->instances = (uint32_t)instances;
@@ -914,19 +921,39 @@ rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t ins
 static void
 rencDraw(id self, __unused SEL _cmd, uint64_t type, uint64_t first, uint64_t count)
 {
-	rencAddDraw(self, type, first, count, 1, 0);
+	rencAddDraw(self, type, first, count, 1, 0, nil, 0, 0);
 }
 
 static void
 rencDrawInstanced(id self, __unused SEL _cmd, uint64_t type, uint64_t first, uint64_t count, uint64_t instances)
 {
-	rencAddDraw(self, type, first, count, instances, 0);
+	rencAddDraw(self, type, first, count, instances, 0, nil, 0, 0);
 }
 
 static void
 rencDrawBase(id self, __unused SEL _cmd, uint64_t type, uint64_t first, uint64_t count, uint64_t instances, uint64_t base)
 {
-	rencAddDraw(self, type, first, count, instances, base);
+	rencAddDraw(self, type, first, count, instances, base, nil, 0, 0);
+}
+
+static void
+rencDrawIndexedBase(id self, __unused SEL _cmd, uint64_t type, uint64_t count, uint64_t itype, id ibuf, uint64_t ioff,
+    uint64_t instances, int64_t basevertex, uint64_t base)
+{
+	/* the vertex offset (VFD_INDEX_OFFSET) is the base vertex */
+	rencAddDraw(self, type, (uint32_t)basevertex, count, instances, base, ibuf, ioff, itype == 0 ? 1 : 2);
+}
+
+static void
+rencDrawIndexed(id self, SEL cmd, uint64_t type, uint64_t count, uint64_t itype, id ibuf, uint64_t ioff)
+{
+	rencDrawIndexedBase(self, cmd, type, count, itype, ibuf, ioff, 1, 0, 0);
+}
+
+static void
+rencDrawIndexedInst(id self, SEL cmd, uint64_t type, uint64_t count, uint64_t itype, id ibuf, uint64_t ioff, uint64_t instances)
+{
+	rencDrawIndexedBase(self, cmd, type, count, itype, ibuf, ioff, instances, 0, 0);
 }
 
 static void
@@ -1046,6 +1073,18 @@ runDraw(struct op * op)
 	r->count = d->count;
 	r->instances = d->instances;
 	r->base_instance = d->base_instance;
+	if (d->isize != 0 && d->ibuf != nil) {
+		struct bufstate * ib = STATE(d->ibuf, struct bufstate);
+
+		if (d->ioff >= ib->b.len) {
+			lavlog("indexed draw: the index buffer offset is past its end");
+			free(r);
+			return NO;
+		}
+		r->index_gpu = ib->b.gpu + d->ioff;
+		r->index_size = d->isize;
+		r->index_max = (uint32_t)((ib->b.len - d->ioff) / (d->isize == 1 ? 2 : 4));
+	}
 	memcpy(r->viewport, d->viewport, sizeof(r->viewport));
 	memcpy(r->scissor, d->scissor, sizeof(r->scissor));
 	r->cull = d->cull;
