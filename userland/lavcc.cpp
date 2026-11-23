@@ -6,6 +6,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
+#include <memory>
+#include <cstdio>
 #include "hakios-metal/compiler.hpp"
 #include "hakios-metal/metallib.hpp"
 #include "lava5.h"
@@ -266,4 +269,61 @@ extern "C" int lavcc_probe(struct lavcc_lib* l, unsigned i, char* summary, size_
              s->stage.k.numWords, buf, tex, smp, img, ls.k.num_ssbos, ls.k.num_ubos, ls.ncolor, refuse ? " -- DRIVER REFUSES: " : "", refuse ? refuse : "");
     lavcc_stage_free(&ls);
     return 1;
+}
+
+// every vertex function with every fragment function of a library, each stage compiled once: which pairs link and which of those the
+// driver refuses (lavsurvey pairs). Prints to stdout.
+extern "C" void lavcc_survey_pairs(struct lavcc_lib* l)
+{
+    const auto& fns = l->lib.functions();
+    std::vector<std::unique_ptr<CompiledStage>> st(fns.size());
+    std::vector<std::string> whyc(fns.size());
+    for (size_t i = 0; i < fns.size(); i++) {
+        if (fns[i].type != MetalFunction::kVertex && fns[i].type != MetalFunction::kFragment) continue;
+        std::string w;
+        st[i] = stage_of(l, fns[i].name.c_str(), fns[i].type, &w);
+        if (!st[i]) printf("NOCOMPILE %s: %s\n", fns[i].name.c_str(), w.c_str());
+    }
+    unsigned tried = 0, usable = 0, refused = 0, nolink = 0;
+    std::map<std::string, unsigned> reasons, refusedBy;
+    for (size_t i = 0; i < fns.size(); i++) {
+        if (fns[i].type != MetalFunction::kVertex || !st[i]) continue;
+        unsigned vusable = 0;
+        for (size_t j = 0; j < fns.size(); j++) {
+            if (fns[j].type != MetalFunction::kFragment || !st[j]) continue;
+            tried++;
+            Linkage lk{};
+            std::string w;
+            if (!render::link(st[i]->stage, st[j]->stage, &lk, &w)) {
+                nolink++;
+                for (auto& c : w) if (c >= '0' && c <= '9') c = '#';
+                // drop the function-specific part before the first colon-free tail
+                reasons[w.substr(0, 110)]++;
+                continue;
+            }
+            struct lav5_stage vs, fs;
+            memset(&vs, 0, sizeof vs);
+            memset(&fs, 0, sizeof fs);
+            flatten_stage(st[i]->stage, st[i]->resources, &vs);
+            flatten_stage(st[j]->stage, st[j]->resources, &fs);
+            const char* e = lav5_refuse_stage(&vs);
+            const char* who = fns[i].name.c_str();
+            if (!e) { e = lav5_refuse_stage(&fs); who = fns[j].name.c_str(); }
+            if (e) {
+                refused++;
+                refusedBy[std::string(who) + ": " + e]++;
+                reasons[std::string("REFUSED: ") + e]++;
+            } else {
+                usable++;
+                vusable++;
+            }
+            lavcc_stage_free(&vs);
+            lavcc_stage_free(&fs);
+        }
+        printf("VS %-44s usable with %u fragment functions\n", fns[i].name.c_str(), vusable);
+        fflush(stdout);
+    }
+    printf("pairs: %u tried, %u usable, %u refused by the driver, %u do not link\n", tried, usable, refused, nolink);
+    for (auto& kv : reasons) printf("  %5u x %s\n", kv.second, kv.first.c_str());
+    for (auto& kv : refusedBy) printf("  refused %5u x %s\n", kv.second, kv.first.c_str());
 }

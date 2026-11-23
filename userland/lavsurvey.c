@@ -14,6 +14,7 @@ main(int argc, char ** argv)
 	struct lavcc_lib * lib;
 	unsigned ok = 0, bad = 0;
 	int quiet = argc > 2;
+	int pairs = argc > 2 && strcmp(argv[2], "pairs") == 0;
 
 	if (argc < 2 || (f = fopen(argv[1], "rb")) == NULL) {
 		printf("usage: lavsurvey lib.metallib [quiet]\n");
@@ -31,6 +32,10 @@ main(int argc, char ** argv)
 	if (lib == NULL) {
 		printf("%s: %s\n", argv[1], why);
 		return 1;
+	}
+	if (pairs) {
+		lavcc_survey_pairs(lib);
+		return 0;
 	}
 	for (unsigned i = 0; i < lavcc_function_count(lib); i++) {
 		int type = 0, r;

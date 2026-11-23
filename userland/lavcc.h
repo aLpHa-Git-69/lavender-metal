@@ -27,6 +27,8 @@ void lavcc_stage_free(struct lav5_stage * s);
 /* function I of the library compiled alone: 1 with a SUMMARY of what it uses, 0 with the reason in WHY, -1 past the end */
 int lavcc_probe(struct lavcc_lib * l, unsigned i, char * summary, size_t ssize, char * why, size_t whysize);
 
+void lavcc_survey_pairs(struct lavcc_lib * l);
+
 #ifdef __cplusplus
 }
 #endif

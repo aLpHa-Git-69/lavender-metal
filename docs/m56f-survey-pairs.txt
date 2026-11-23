@@ -1,0 +1,48 @@
+NOCOMPILE fixed_frag_lph_cph: fixed_frag_lph_cph reads its render targets through slots past the 16 the table holds
+NOCOMPILE fixed_frag_lph_cpf: fixed_frag_lph_cpf reads its render targets through slots past the 16 the table holds
+VS std_vert0_lpf                                usable with 55 fragment functions
+VS std_vert1_lpf                                usable with 77 fragment functions
+VS upsample_vert_lpf                            usable with 83 fragment functions
+VS downsample_blur_vert_lpf                     usable with 55 fragment functions
+VS asg_vert_lpf                                 usable with 55 fragment functions
+VS variable_blur_vert_lpf                       usable with 77 fragment functions
+VS path_cubic_vert_0_lpf                        usable with 87 fragment functions
+VS path_cubic_vert_1_lpf                        usable with 87 fragment functions
+VS path_rect_vert_lpf                           usable with 83 fragment functions
+VS path_stroke_line_vert_lpf                    usable with 87 fragment functions
+VS path_stroke_curve_vert_0_lpf                 usable with 55 fragment functions
+VS path_stroke_curve_vert_1_lpf                 usable with 55 fragment functions
+VS path_stroke_miter_join_vert_lpf              usable with 93 fragment functions
+VS path_stroke_round_join_vert_lpf              usable with 83 fragment functions
+VS path_blit_vert_lpf                           usable with 19 fragment functions
+VS buffer_image_blit_vert_lpf                   usable with 93 fragment functions
+VS stroke_line_vert_lpf                         usable with 93 fragment functions
+VS fixed_vert_lph_spc                           usable with 0 fragment functions
+VS fixed_vert_lph_gen                           usable with 0 fragment functions
+VS fixed_vert_lpf_spc                           usable with 0 fragment functions
+VS fixed_vert_lpf_gen                           usable with 0 fragment functions
+VS std_vert0_lph                                usable with 55 fragment functions
+VS std_vert1_lph                                usable with 77 fragment functions
+VS upsample_vert_lph                            usable with 83 fragment functions
+VS downsample_blur_vert_lph                     usable with 55 fragment functions
+VS asg_vert_lph                                 usable with 55 fragment functions
+VS variable_blur_vert_lph                       usable with 77 fragment functions
+VS path_cubic_vert_0_lph                        usable with 87 fragment functions
+VS path_cubic_vert_1_lph                        usable with 87 fragment functions
+VS path_rect_vert_lph                           usable with 83 fragment functions
+VS path_stroke_line_vert_lph                    usable with 87 fragment functions
+VS path_stroke_curve_vert_0_lph                 usable with 55 fragment functions
+VS path_stroke_curve_vert_1_lph                 usable with 55 fragment functions
+VS path_stroke_miter_join_vert_lph              usable with 93 fragment functions
+VS path_stroke_round_join_vert_lph              usable with 83 fragment functions
+VS path_blit_vert_lph                           usable with 19 fragment functions
+VS buffer_image_blit_vert_lph                   usable with 93 fragment functions
+VS stroke_line_vert_lph                         usable with 93 fragment functions
+VS read_surf_vert                               usable with 19 fragment functions
+pairs: 3627 tried, 2493 usable, 372 refused by the driver, 762 do not link
+    372 x REFUSED: the stage uses threadgroup or private memory
+    762 x the fragment stage reads varying slot ## (VAR#), which the vertex stage does not write
+  refused    93 x fixed_vert_lpf_gen: the stage uses threadgroup or private memory
+  refused    93 x fixed_vert_lpf_spc: the stage uses threadgroup or private memory
+  refused    93 x fixed_vert_lph_gen: the stage uses threadgroup or private memory
+  refused    93 x fixed_vert_lph_spc: the stage uses threadgroup or private memory

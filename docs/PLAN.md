@@ -208,3 +208,13 @@ point size, so clip distances are not on the path.
 Loader limit found: with the unstripped binary at 8.28 MB (8,284,704 bytes) Metal returned no device and the plug-in never ran (8,268,352
 loaded); `strip -x` (7.9 MB) fixes it, so build-lavmetal.sh strips before signing.
 Next: run QuartzCore pipelines through the plug-in, then enable the device for backboardd behind a boot-arg.
+
+## M5.6 (f) done (2026-11-23): pair survey of QuartzCore (CPU: compile, link, driver checks)
+
+`lavsurvey lib pairs` compiles every stage once, links every vertex function with every fragment function and runs the driver's
+stage checks (docs/m56f-survey-pairs.txt). QuartzCore default.metallib: 3627 pairs, 2493 usable as they are, 762 do not link (the
+fragment reads a varying the vertex does not write: not a pair CoreAnimation would make), 372 refused by the driver, ALL of them
+the four `fixed_vert_*` (they use private memory). So every other vertex function (35) and fragment function can be drawn with the
+driver today; what is left is private memory for fixed_vert_*, and the two `fixed_frag_*_cp*` (render-target slots past 16).
+This survey is CPU only (it needs no GPU: it asks whether a pipeline can be built). The drawing tests that run on the A512 are
+lavmetal_test's stages. Next: draw real QuartzCore pipelines on the GPU through the Metal API.
