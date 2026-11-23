@@ -1,0 +1,50 @@
+== fill_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry fill_id, 0 function constants, 2 resources, 0 varyings, 0 render targets
+NIR: compute "fill_id", workgroup 0 x 0 x 0 (variable), 2 ubos, 1 ssbos, 0 images, 0 textures
+ir3: 256 bytes (64 instruction dwords), instrlen 2, constlen 12 vec4, maxReg 2, local id r0.x, workgroup id r48.x, 1 immediates at vec4 8, driver params yes, 1 UBO ranges, 1 ssbos, 1 ibos
+; CL prog 0/0: 37 instr, 21 nops, 16 non-nops, 4 mov, 0 cov, 64 dwords
+== bytes_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry bytes_id, 0 function constants, 1 resources, 0 varyings, 0 render targets
+NIR: compute "bytes_id", workgroup 0 x 0 x 0 (variable), 0 ubos, 1 ssbos, 0 images, 0 textures
+ir3: 512 bytes (98 instruction dwords), instrlen 3, constlen 8 vec4, maxReg 3, local id r0.x, workgroup id r48.x, 2 immediates at vec4 4, driver params yes, 0 UBO ranges, 1 ssbos, 1 ibos
+; CL prog 0/0: 64 instr, 32 nops, 32 non-nops, 4 mov, 1 cov, 98 dwords
+== clz_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry clz_id, 0 function constants, 1 resources, 0 varyings, 0 render targets
+NIR: compute "clz_id", workgroup 0 x 0 x 0 (variable), 0 ubos, 1 ssbos, 0 images, 0 textures
+MESA: error: shader: MESA_SHADER_COMPUTE
+MESA: error: name: clz_id
+Trace/BPT trap: 5
+== pack_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry pack_id, 0 function constants, 1 resources, 0 varyings, 0 render targets
+NIR: compute "pack_id", workgroup 0 x 0 x 0 (variable), 0 ubos, 1 ssbos, 0 images, 0 textures
+ir3: 512 bytes (128 instruction dwords), instrlen 4, constlen 8 vec4, maxReg 3, local id r0.x, workgroup id r48.x, 2 immediates at vec4 4, driver params yes, 0 UBO ranges, 1 ssbos, 1 ibos
+; CL prog 0/0: 73 instr, 31 nops, 42 non-nops, 4 mov, 9 cov, 128 dwords
+== uniform_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry uniform_id, 0 function constants, 1 resources, 0 varyings, 0 render targets
+NIR: compute "uniform_id", workgroup 0 x 0 x 0 (variable), 0 ubos, 1 ssbos, 0 images, 0 textures
+ir3: 384 bytes (96 instruction dwords), instrlen 3, constlen 4 vec4, maxReg 2, local id r0.x, workgroup id r48.x, 0 immediates at vec4 4, driver params yes, 0 UBO ranges, 1 ssbos, 1 ibos
+; CL prog 0/0: 63 instr, 35 nops, 28 non-nops, 9 mov, 3 cov, 96 dwords
+== width_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry width_id, 0 function constants, 1 resources, 0 varyings, 0 render targets
+NIR: compute "width_id", workgroup 0 x 0 x 0 (variable), 0 ubos, 1 ssbos, 0 images, 0 textures
+ir3: 256 bytes (64 instruction dwords), instrlen 2, constlen 8 vec4, maxReg 2, local id r0.x, workgroup id r48.x, 1 immediates at vec4 4, driver params yes, 0 UBO ranges, 1 ssbos, 1 ibos
+; CL prog 0/0: 33 instr, 20 nops, 13 non-nops, 3 mov, 0 cov, 64 dwords
+== undef_phi_id
+device: FD512, chip id 0x6030500, gen 5, threadsize_base 32, 2 SP cores
+ir3 compiler: gen 5, max_const_compute 512, branchstack 64
+AIR: entry undef_phi_id, 0 function constants, 1 resources, 0 varyings, 0 render targets
+NIR: compute "undef_phi_id", workgroup 0 x 0 x 0 (variable), 0 ubos, 1 ssbos, 0 images, 0 textures
+ir3: 384 bytes (68 instruction dwords), instrlen 2, constlen 8 vec4, maxReg 2, local id r0.x, workgroup id r48.x, 2 immediates at vec4 4, driver params yes, 0 UBO ranges, 1 ssbos, 1 ibos
+; CL prog 0/0: 53 instr, 33 nops, 20 non-nops, 4 mov, 0 cov, 68 dwords
