@@ -1026,6 +1026,7 @@ runDraw(struct op * op)
 		}
 	}
 	r->flush_gpu = gStream.gpu + SCRATCH_OFFSET + 64;
+	r->hole_gpu = gStream.gpu + SCRATCH_OFFSET + 128;
 	w = malloc(STREAM_WORDS * 4);
 	n = lav5_build_render(w, STREAM_WORDS, r, &why);
 	if (n == 0) {

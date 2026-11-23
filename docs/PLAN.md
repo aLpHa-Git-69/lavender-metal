@@ -178,3 +178,12 @@ Of the 135 stage functions that compile, **70 are refused by the driver** (65 ar
 Usable today: the standard layer pipeline pieces without those (`std_vert0/1`, blur, upsample, downsample, luma, p3 clamp, ...).
 Order: SSBO in the VS, then MRT, then point size/clip; each checked with a small Metal test like stages 12-16 before the device
 is enabled for backboardd.
+
+## M5.6 (c) done (2026-11-22): device buffers (SSBO) in the vertex stage
+
+lava5r.c loads the shared SB4_SSBO table (sizes, then addresses; slot i = Metal buffer index i, a hole address for an unbound
+slot) and sets HLSQ_VS_CNTL/FS_CNTL SSBO_ENABLE when the stage uses them; the refusal is gone (limit 16). Mesa's fd5 does not
+advertise SSBOs for the VS ("one state block shared by VS/HS/DS/GS/FS", simplification), the hardware does: lavmetal_test stage 17
+(`ssbo_vs` reading positions and colours from a `device float4 *`) PASSED on the phone, 1352 pixels, same corners. docs/m56c-phone-ssbo-vs.txt.
+This clears the 32 vertex functions of QuartzCore's path_* and fixed_vert_* families (they still need MRT in their fragment
+partners, and the 4 fixed_vert_* with point size/clip). Next: MRT.

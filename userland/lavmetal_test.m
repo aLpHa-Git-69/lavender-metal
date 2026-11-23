@@ -15,6 +15,8 @@
 #import <IOSurface/IOSurfaceRef.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <IOSurface/IOSurfaceRef.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <IOSurface/IOSurfaceRef.h>
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <signal.h>
@@ -569,6 +571,54 @@ main(int argc, char ** argv)
 					printf("  pixels: outside %08x, centre %08x (r %d g %d b %d)\n", o, c, r, g, b);
 					check(o == 0xff0000ffu, "outside the quad is blue");
 					check(r > 118 && r < 137 && b > 118 && b < 137 && g < 8, "the centre is half red over half blue");
+				}
+			}
+			/* M5.6: the vertex function reads its vertices from a device buffer (an SSBO) */
+			if (gFailed == 0) {
+				printf("stage 17: ssbo_vs (vertices from a device buffer), tri_fs\n");
+				id<MTLFunction> vf = [lib newFunctionWithName:@"ssbo_vs"], ff = [lib newFunctionWithName:@"tri_fs"];
+				check(vf != nil && ff != nil, "ssbo_vs and tri_fs");
+				MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+				rpd.vertexFunction = vf;
+				rpd.fragmentFunction = ff;
+				rpd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+				id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+				check(rps != nil, "a render pipeline state whose vertex stage has a device buffer");
+				static const float verts[6][4] = {
+					{ -0.8f, -0.8f, 0, 1 }, { 0.8f, -0.8f, 0, 1 }, { 0.0f, 0.8f, 0, 1 },
+					{ 1, 0, 0, 1 }, { 0, 1, 0, 1 }, { 0, 0, 1, 1 },
+				};
+				id<MTLBuffer> vb = [device newBufferWithBytes:verts length:sizeof(verts) options:MTLResourceStorageModeShared];
+				MTLTextureDescriptor * td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+				    width:64 height:64 mipmapped:NO];
+				td.usage = MTLTextureUsageRenderTarget;
+				id<MTLTexture> tex = [device newTextureWithDescriptor:td];
+				if (gFailed == 0) {
+					MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					pass.colorAttachments[0].texture = tex;
+					pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+					pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+					pass.colorAttachments[0].clearColor = MTLClearColorMake(32 / 255.0, 32 / 255.0, 32 / 255.0, 1);
+					id<MTLCommandBuffer> cb = [queue commandBuffer];
+					id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+					[re setRenderPipelineState:rps];
+					[re setVertexBuffer:vb offset:0 atIndex:0];
+					[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+					[re endEncoding];
+					[cb commit];
+					[cb waitUntilCompleted];
+					check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+					uint32_t px[64 * 64];
+					[tex getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+					int covered = 0;
+					for (int i = 0; i < 64 * 64; i++) {
+						covered += px[i] != 0xff202020u;
+					}
+					uint32_t a = px[1 * 64 + 1], c = px[40 * 64 + 32], rr = px[55 * 64 + 10], gg = px[55 * 64 + 54], bb = px[10 * 64 + 32];
+					printf("  pixels: (1,1) %08x (32,40) %08x (10,55) %08x (54,55) %08x (32,10) %08x; %d covered\n", a, c, rr, gg, bb, covered);
+					check(a == 0xff202020u && c != 0xff202020u, "clear colour at the corner, the triangle in the centre");
+					check(((rr >> 16) & 255) > ((rr >> 8) & 255) && (bb & 255) > ((bb >> 16) & 255) && ((gg >> 8) & 255) > (gg & 255), "red, green and blue corners");
+					check(covered > 500 && covered < 2500, "about a third covered");
 				}
 			}
 		}

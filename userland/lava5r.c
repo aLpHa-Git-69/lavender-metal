@@ -271,8 +271,8 @@ lav5_refuse_stage(const struct lav5_stage * s)
 	} else if (s->ncolor != 1) {
 		return "the fragment stage does not write exactly one colour";
 	}
-	if (s->k.num_ssbos) {
-		return "the stage reads or writes device buffers (SSBO)";
+	if (s->k.num_ssbos > 16) {
+		return "the stage uses more than 16 device buffers";
 	}
 	if (s->k.shared_size || s->k.pvtmem_size) {
 		return "the stage uses threadgroup or private memory";
@@ -319,8 +319,8 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		*why = "the fragment stage must write exactly one colour";
 		return 0;
 	}
-	if (vs->k.num_ssbos || fs->k.num_ssbos || vs->k.shared_size || fs->k.shared_size || vs->k.pvtmem_size || fs->k.pvtmem_size) {
-		*why = "a stage with device buffers, threadgroup or private memory: not served yet";
+	if ((e = lav5_refuse_stage(vs)) != NULL || (e = lav5_refuse_stage(fs)) != NULL) {
+		*why = e;
 		return 0;
 	}
 	/* setup_stages: when both do not fit the instruction memory, one or both run from external memory */
@@ -438,8 +438,8 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	out(s, A5XX_HLSQ_GS_CONFIG_CONSTOBJECTOFFSET(fs_constoff + fs_constlen) | A5XX_HLSQ_GS_CONFIG_SHADEROBJOFFSET(fs_instroff));
 	set(s, REG_A5XX_HLSQ_CS_CONFIG, 0);
 	pkt4(s, REG_A5XX_HLSQ_VS_CNTL, 5);
-	out(s, A5XX_HLSQ_VS_CNTL_INSTRLEN(vs_instrlen));
-	out(s, A5XX_HLSQ_FS_CNTL_INSTRLEN(fs_instrlen));
+	out(s, A5XX_HLSQ_VS_CNTL_INSTRLEN(vs_instrlen) | COND(vs->k.num_ssbos, A5XX_HLSQ_VS_CNTL_SSBO_ENABLE));
+	out(s, A5XX_HLSQ_FS_CNTL_INSTRLEN(fs_instrlen) | COND(fs->k.num_ssbos, A5XX_HLSQ_FS_CNTL_SSBO_ENABLE));
 	out(s, A5XX_HLSQ_HS_CNTL_INSTRLEN(0));
 	out(s, A5XX_HLSQ_DS_CNTL_INSTRLEN(0));
 	out(s, A5XX_HLSQ_GS_CNTL_INSTRLEN(0));
@@ -591,6 +591,38 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		    (e = emit_stage_consts(s, SB4_FS_SHADER, &fs->k, r->fs_buf, NULL, 0)) != NULL) {
 			*why = e;
 			return 0;
+		}
+	}
+
+	/* device buffers (emit_ssbos): one table shared by the stages, sizes then addresses; slot i is Metal's buffer index i */
+	{
+		unsigned n = vs->k.num_ssbos > fs->k.num_ssbos ? vs->k.num_ssbos : fs->k.num_ssbos;
+
+		if (n > 0) {
+			pkt7(s, CP_LOAD_STATE4, 3 + 2 * n);
+			out(s, CP_LOAD_STATE4_0_DST_OFF(0) | CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) | CP_LOAD_STATE4_0_STATE_BLOCK(SB4_SSBO) |
+			    CP_LOAD_STATE4_0_NUM_UNIT(n));
+			out(s, CP_LOAD_STATE4_1_STATE_TYPE(ST4_CONSTANTS) | CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
+			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+			for (i = 0; i < n; i++) {
+				const struct lav5_binding * b = i < vs->k.num_ssbos && r->vs_buf[i].gpu ? &r->vs_buf[i] : &r->fs_buf[i];
+				uint64_t sz = b->gpu != 0 ? b->bytes : 4;
+
+				out(s, A5XX_SSBO_1_0_WIDTH((uint32_t)sz & 0xffff));
+				out(s, A5XX_SSBO_1_1_HEIGHT((uint32_t)(sz >> 16)));
+			}
+			pkt7(s, CP_LOAD_STATE4, 3 + 2 * n);
+			out(s, CP_LOAD_STATE4_0_DST_OFF(0) | CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) | CP_LOAD_STATE4_0_STATE_BLOCK(SB4_SSBO) |
+			    CP_LOAD_STATE4_0_NUM_UNIT(n));
+			out(s, CP_LOAD_STATE4_1_STATE_TYPE(ST4_UBO) | CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
+			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+			for (i = 0; i < n; i++) {
+				const struct lav5_binding * b = i < vs->k.num_ssbos && r->vs_buf[i].gpu ? &r->vs_buf[i] : &r->fs_buf[i];
+				uint64_t a = b->gpu != 0 ? b->gpu : r->hole_gpu;
+
+				out(s, (uint32_t)a);
+				out(s, (uint32_t)(a >> 32));
+			}
 		}
 	}
 

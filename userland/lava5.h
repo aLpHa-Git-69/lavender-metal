@@ -153,6 +153,7 @@ struct lav5_render {
 	struct lav5_samp samp[16];
 	struct lav5_blend blend;
 	float blend_color[4];
+	uint64_t hole_gpu;                          /* memory nobody names, for an SSBO slot nothing is bound at */
 };
 
 /* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */

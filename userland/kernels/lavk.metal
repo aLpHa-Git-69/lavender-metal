@@ -83,3 +83,13 @@ fragment float4 half_fs(TexOut in [[stage_in]])
 {
 	return float4(1.0, 0.0, 0.0, 0.5);
 }
+
+// ---- device buffers in the vertex stage (M5.6) ----
+// positions in verts[0..2], colours in verts[3..5]: what CoreAnimation's path_* and fixed_vert_* functions do
+vertex TriOut ssbo_vs(uint vid [[vertex_id]], const device float4 * verts [[buffer(0)]])
+{
+	TriOut o;
+	o.pos = float4(verts[vid].xy, 0.0, 1.0);
+	o.color = verts[vid + 3];
+	return o;
+}
