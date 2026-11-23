@@ -330,6 +330,7 @@ static unsigned int gPort;
 static Protocol * gProtocols[96];
 static unsigned gProtocolCount;
 static Class gBufferClass, gQueueClass, gCommandBufferClass, gBlitClass;
+static Class gTextureClass, gRenderPipeClass, gRenderClass;
 
 static void
 keepProtocol(Protocol * p)
@@ -578,7 +579,7 @@ bufferSetLabel(id self, __unused SEL _cmd, id label)
 
 /* ---- queue, command buffer, blit encoder ---- */
 
-enum opkind { OP_FILL, OP_COPY, OP_DISPATCH };
+enum opkind { OP_FILL, OP_COPY, OP_DISPATCH, OP_CLEAR, OP_DRAW };
 
 /* a compute dispatch as the encoder had it when it was encoded: the pipeline, what is bound, the grid */
 struct dispatch {
@@ -590,8 +591,28 @@ struct dispatch {
 	uint32_t groups[3], local[3];
 };
 
+/* a draw as the render encoder had it when it was encoded */
+struct draw {
+	id pipeline;                            /* retained */
+	id target;                              /* retained texture */
+	id vbuf[LAV5_MAX_BUFFERS];              /* retained: setVertexBuffer: */
+	uint64_t voff[LAV5_MAX_BUFFERS];
+	uint8_t * vbytes[LAV5_MAX_BUFFERS];     /* setVertexBytes:, a copy */
+	uint32_t vblen[LAV5_MAX_BUFFERS];
+	id fbuf[LAV5_MAX_BUFFERS];
+	uint64_t foff[LAV5_MAX_BUFFERS];
+	uint8_t * fbytes[LAV5_MAX_BUFFERS];
+	uint32_t fblen[LAV5_MAX_BUFFERS];
+	uint32_t prim, first, count, instances, base_instance;
+	float viewport[6];
+	uint32_t scissor[4];
+	uint32_t cull, front_cw;
+};
+
 struct op {
 	enum opkind kind;
+	struct draw * draw;
+	double clear[4];
 	id src, dst;                    /* retained buffers */
 	uint64_t srcOff, dstOff, size;
 	uint8_t value;
@@ -659,6 +680,19 @@ cbFreeOps(struct cbstate * st)
 	for (size_t i = 0; i < st->nops; i++) {
 		[st->ops[i].src release];
 		[st->ops[i].dst release];
+		if (st->ops[i].draw != NULL) {
+			struct draw * w = st->ops[i].draw;
+
+			[w->pipeline release];
+			[w->target release];
+			for (int j = 0; j < LAV5_MAX_BUFFERS; j++) {
+				[w->vbuf[j] release];
+				[w->fbuf[j] release];
+				free(w->vbytes[j]);
+				free(w->fbytes[j]);
+			}
+			free(w);
+		}
 		if (st->ops[i].disp != NULL) {
 			struct dispatch * d = st->ops[i].disp;
 
@@ -1580,6 +1614,9 @@ runDispatch(struct op * op)
 
 typedef void (^LavHandler)(id);
 
+static BOOL runClear(struct op * op);
+static BOOL runDraw(struct op * op);
+
 static void
 cbCommit(id self, __unused SEL _cmd)
 {
@@ -1602,6 +1639,12 @@ cbCommit(id self, __unused SEL _cmd)
 			break;
 		case OP_COPY:
 			ok = runCopy(&st->ops[i]);
+			break;
+		case OP_CLEAR:
+			ok = runClear(&st->ops[i]);
+			break;
+		case OP_DRAW:
+			ok = runDraw(&st->ops[i]);
 			break;
 		default:
 			ok = runDispatch(&st->ops[i]);
@@ -1681,6 +1724,8 @@ cbNoTime(__unused id self, __unused SEL _cmd)
 {
 	return 0;
 }
+
+#include "LavenderRender.inc"
 
 /* ---- the device ---- */
 
@@ -1834,6 +1879,8 @@ registerComputeClasses(Class device)
 	}
 }
 
+#include "LavenderRenderReg.inc"
+
 static void
 registerObjectClasses(Class device)
 {
@@ -1913,6 +1960,7 @@ registerObjectClasses(Class device)
 		objc_registerClassPair(gBlitClass);
 	}
 	registerComputeClasses(device);
+	registerRenderClasses(device);
 }
 
 __attribute__((constructor)) static void

@@ -336,6 +336,76 @@ main(int argc, char ** argv)
 				}
 				check(wrong == 0, "all 256 words are (i + 3)^4");
 			}
+			/* M5.4: a render pass into a texture, the pipeline from a vertex and a fragment function */
+			for (int variant = 0; variant < 2 && gFailed == 0; variant++) {
+				printf("stage %d: render a triangle into a 64x64 BGRA texture with %s\n", 12 + variant,
+				    variant == 0 ? "tri_vs (the vertex id)" : "attr_vs (a vertex buffer through a vertex descriptor)");
+				id<MTLFunction> vf = [lib newFunctionWithName:variant == 0 ? @"tri_vs" : @"attr_vs"];
+				id<MTLFunction> ff = [lib newFunctionWithName:@"tri_fs"];
+				check(vf != nil && ff != nil, "the vertex and fragment functions");
+				MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+				rpd.vertexFunction = vf;
+				rpd.fragmentFunction = ff;
+				rpd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+				if (variant == 1) {
+					MTLVertexDescriptor * vd = [MTLVertexDescriptor vertexDescriptor];
+					vd.attributes[0].format = MTLVertexFormatFloat2;
+					vd.attributes[0].offset = 0;
+					vd.attributes[0].bufferIndex = 0;
+					vd.attributes[1].format = MTLVertexFormatFloat4;
+					vd.attributes[1].offset = 8;
+					vd.attributes[1].bufferIndex = 0;
+					vd.layouts[0].stride = 24;
+					rpd.vertexDescriptor = vd;
+				}
+				id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+				check(rps != nil, "a render pipeline state");
+				if (rps == nil && err != nil) {
+					printf("    %s\n", [[err localizedDescription] UTF8String]);
+				}
+				MTLTextureDescriptor * td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+				    width:64 height:64 mipmapped:NO];
+				td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+				td.storageMode = MTLStorageModeShared;
+				id<MTLTexture> tex = [device newTextureWithDescriptor:td];
+				check(tex != nil, "a 64x64 texture");
+				if (gFailed == 0) {
+					static const float verts[3][6] = {
+						{ -0.8f, -0.8f, 1, 0, 0, 1 }, { 0.8f, -0.8f, 0, 1, 0, 1 }, { 0.0f, 0.8f, 0, 0, 1, 1 },
+					};
+					MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					pass.colorAttachments[0].texture = tex;
+					pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+					pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+					pass.colorAttachments[0].clearColor = MTLClearColorMake(32 / 255.0, 32 / 255.0, 32 / 255.0, 1);
+					id<MTLCommandBuffer> cb = [queue commandBuffer];
+					id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+					check(re != nil, "a render command encoder");
+					[re setRenderPipelineState:rps];
+					if (variant == 1) {
+						[re setVertexBytes:verts length:sizeof(verts) atIndex:0];
+					}
+					[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+					[re endEncoding];
+					[cb commit];
+					[cb waitUntilCompleted];
+					check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+					uint32_t px[64 * 64];
+					[tex getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+					int covered = 0;
+					for (int i = 0; i < 64 * 64; i++) {
+						covered += px[i] != 0xff202020u;
+					}
+					uint32_t a = px[1 * 64 + 1], c = px[40 * 64 + 32], rr = px[55 * 64 + 10], gg = px[55 * 64 + 54], bb = px[10 * 64 + 32];
+					printf("  pixels: (1,1) %08x (32,40) %08x (10,55) %08x (54,55) %08x (32,10) %08x; %d covered\n", a, c, rr, gg, bb, covered);
+					check(a == 0xff202020u, "the corner keeps the clear colour");
+					check(c != 0xff202020u, "the centre is drawn");
+					check(((rr >> 16) & 255) > ((rr >> 8) & 255) && ((rr >> 16) & 255) > (rr & 255), "bottom-left is red");
+					check(((gg >> 8) & 255) > ((gg >> 16) & 255) && ((gg >> 8) & 255) > (gg & 255), "bottom-right is green");
+					check((bb & 255) > ((bb >> 16) & 255) && (bb & 255) > ((bb >> 8) & 255), "top is blue");
+					check(covered > 500 && covered < 2500, "about a third of the target is covered");
+				}
+			}
 		}
 
 		kr = metalProps(conn, 0);

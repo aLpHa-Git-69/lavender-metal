@@ -114,3 +114,14 @@ corners, y flipped, no hang). Output in docs/m54a-phone-triangle.txt.
 Bug found on the way: the vertex-id-only VS reported no vertex id register (hakios looked up SYSTEM_VALUE_VERTEX_ID but ir3
 emits VERTEX_ID_ZERO_BASE); `compileStage` now falls back to the zero-base one. Next: textures/render pass API, render
 pipeline + encoder in the plug-in (LavenderMetal.m).
+
+## M5.4 (b) done: Metal render through the plug-in
+
+Plug-in classes (userland/LavenderRender.inc, LavenderRenderReg.inc): textures (2D RGBA8/BGRA8, CPU-visible, linear, pitch
+aligned to 64), render pipeline states (vertex+fragment compiled and linked by lavcc, attributes from the vertex descriptor:
+float..float4, uchar4Normalized), render command encoder (pipeline, vertex/fragment buffers and bytes, viewport, scissor,
+cull, winding, drawPrimitives with instances; clear load action by the CPU). Each draw is one lava5r stream at commit.
+lavmetal_test stages 12-13 (tri_vs by vertex id; attr_vs through a vertex descriptor) PASSED on the phone: 1352 pixels, correct
+corner colours. Output in docs/m54b-phone-metal-render.txt.
+Not served yet: sampling textures, depth/stencil, blending, indexed draws, points, MSAA, load/store actions beyond clear, other
+pixel formats. Next: M5.5 present (CAMetalLayer drawables), M5.6 CoreAnimation acceptance.

@@ -1,0 +1,106 @@
+IOServiceOpen: kr 0
+properties on: kr 0
+2026-11-22 23:42:07.036 lavmetal_test[1966:13562] LavenderMetal: this system has no _MTLTexture: LavenderMetalTexture is made on NSObject
+2026-11-22 23:42:07.065 lavmetal_test[1966:13562] LavenderMetal: loaded: LavenderMetalDevice and its objects are registered (base _MTLDevice)
+2026-11-22 23:42:07.102 lavmetal_test[1966:13562] LavenderMetal: a device for the accelerator port 4611 (made)
+2026-11-22 23:42:07.114 lavmetal_test[1966:13562] LavenderMetal: asked and not implemented: -featureProfile (LavenderMetalDevice; returns 8 bytes, answered with zero)
+MTLCreateSystemDefaultDevice: a device
+  class LavenderMetalDevice, name Lavender Adreno 512, maxBufferLength 16777216
+2026-11-22 23:42:07.134 lavmetal_test[1966:13562] LavenderMetal: the GPU service is open; stream buffer at GPU 0xa454c000
+newCommandQueue: an object, buffers: A B
+  A: length 65536
+stage 1: the CPU's view of a buffer
+  a new buffer reads zero                                        OK
+stage 2: fill by the GPU (CP_MEM_WRITE), 4096 aligned bytes
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  bytes 0..4095 are 0xab                                         OK
+  bytes after the range stay zero                                OK
+stage 3: fill with an unaligned start and length
+2026-11-22 23:42:07.182 lavmetal_test[1966:13562] LavenderMetal: fill: 1 head and 0 tail bytes by the CPU
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  bytes 8195..9195 are 0x5a                                      OK
+  the bytes either side stay zero                                OK
+stage 4: copy 64 bytes by the 2D core (A[0..64) -> B[16384..16448))
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 64 bytes are A's                                           OK
+  the bytes after stay zero                                      OK
+stage 5: copy 8192 bytes (A[0..8192) -> B[32768..40960))
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 8192 bytes are A's                                         OK
+  the bytes after stay zero                                      OK
+stage 6: copy with an unaligned start and length (A[5..20005) -> B[41005..61005))
+2026-11-22 23:42:07.308 lavmetal_test[1966:13562] LavenderMetal: copy of 20000 bytes entirely by the CPU (too small or misaligned)
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 20000 bytes are A's                                        OK
+  the bytes before stay as they were                             OK
+stage 6b: copy whose ends are unaligned but alike (A[5..20005) -> B[41029..61029)): the CPU does the edges, the 2D core the middle
+2026-11-22 23:42:07.404 lavmetal_test[1966:13562] LavenderMetal: copy: 59 head and 37 tail bytes by the CPU
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the 20000 bytes are A's                                        OK
+  the bytes after stay zero                                      OK
+stage 7: two operations in one command buffer, in order
+  command buffer status 4, completed handler called
+  the command buffer completed                                   OK
+  the copy sees the fill: 1024 bytes of 0x33                     OK
+stage 8: a library from /var/root/lavk3.metallib (20473 bytes)
+2026-11-22 23:42:07.473 lavmetal_test[1966:13562] LavenderMetal: library of 20473 bytes, 6 functions
+  newLibraryWithData gave a library                              OK
+  newFunctionWithName: fill_id, saxpy, square                    OK
+2026-11-22 23:42:07.944 lavmetal_test[1966:13562] LavenderMetal: pipeline fill_id: 64 words, instrlen 2, constlen 12, 1 ssbos, 1 ranges, code at GPU 0xaaa2c000
+2026-11-22 23:42:07.980 lavmetal_test[1966:13562] LavenderMetal: pipeline saxpy: 64 words, instrlen 2, constlen 8, 2 ssbos, 1 ranges, code at GPU 0xaf0dc000
+2026-11-22 23:42:07.998 lavmetal_test[1966:13562] LavenderMetal: pipeline square: 64 words, instrlen 2, constlen 4, 2 ssbos, 0 ranges, code at GPU 0xbc7c8000
+  a compute pipeline state of each                               OK
+  fill_id: threadExecutionWidth 32, maxTotalThreadsPerThreadgroup 256
+stage 9: fill_id, 1024 threads, the seed by setBytes
+2026-11-22 23:42:08.016 lavmetal_test[1966:13562] LavenderMetal: dispatch of fill_id: 16x1x1 groups of 64x1x1, 170 words, done
+  the command buffer completed                                   OK
+  all 1024 words are i * 0x9e3779b1 + seed                       OK
+stage 10: saxpy by dispatchThreads, y = 2 x + y over 512 floats
+2026-11-22 23:42:08.035 lavmetal_test[1966:13562] LavenderMetal: dispatch of saxpy: 8x1x1 groups of 64x1x1, 166 words, done
+  the command buffer completed                                   OK
+  all 512 floats are 2 i + 1                                     OK
+stage 11: two dispatches in one command buffer: square, then square of the result (i^4)
+2026-11-22 23:42:08.053 lavmetal_test[1966:13562] LavenderMetal: dispatch of square: 4x1x1 groups of 64x1x1, 146 words, done
+2026-11-22 23:42:08.070 lavmetal_test[1966:13562] LavenderMetal: dispatch of square: 4x1x1 groups of 64x1x1, 146 words, done
+  the command buffer completed                                   OK
+  all 256 words are (i + 3)^4                                    OK
+stage 12: render a triangle into a 64x64 BGRA texture with tri_vs (the vertex id)
+  the vertex and fragment functions                              OK
+2026-11-22 23:42:08.154 lavmetal_test[1966:13562] LavenderMetal: render pipeline tri_vs + tri_fs: 64+32 words, 0 attributes
+  a render pipeline state                                        OK
+2026-11-22 23:42:08.172 lavmetal_test[1966:13562] LavenderMetal: texture 64x64 format 80, pitch 256, at GPU 0xaf064000
+  a 64x64 texture                                                OK
+  a render command encoder                                       OK
+2026-11-22 23:42:08.208 lavmetal_test[1966:13562] LavenderMetal: draw: 3 vertices x 1 instances, prim 4, 592 words, done
+  the command buffer completed                                   OK
+  pixels: (1,1) ff202020 (32,40) ff525755 (10,55) ffe50f0a (54,55) ff0aea0a (32,10) ff080deb; 1352 covered
+  the corner keeps the clear colour                              OK
+  the centre is drawn                                            OK
+  bottom-left is red                                             OK
+  bottom-right is green                                          OK
+  top is blue                                                    OK
+  about a third of the target is covered                         OK
+stage 13: render a triangle into a 64x64 BGRA texture with attr_vs (a vertex buffer through a vertex descriptor)
+  the vertex and fragment functions                              OK
+2026-11-22 23:42:08.239 lavmetal_test[1966:13562] LavenderMetal: render pipeline attr_vs + tri_fs: 32+32 words, 2 attributes
+  a render pipeline state                                        OK
+2026-11-22 23:42:08.245 lavmetal_test[1966:13562] LavenderMetal: texture 64x64 format 80, pitch 256, at GPU 0xb1dcc000
+  a 64x64 texture                                                OK
+  a render command encoder                                       OK
+2026-11-22 23:42:08.261 lavmetal_test[1966:13562] LavenderMetal: draw: 3 vertices x 1 instances, prim 4, 592 words, done
+  the command buffer completed                                   OK
+  pixels: (1,1) ff202020 (32,40) ff525755 (10,55) ffe50f0a (54,55) ff0aea0a (32,10) ff080deb; 1352 covered
+  the corner keeps the clear colour                              OK
+  the centre is drawn                                            OK
+  bottom-left is red                                             OK
+  bottom-right is green                                          OK
+  top is blue                                                    OK
+  about a third of the target is covered                         OK
+properties off: kr 0
+PASSED

@@ -11,12 +11,13 @@ CC="xcrun -sdk iphoneos clang -arch arm64 -target arm64-apple-ios16.0 -O1 -Wall"
 
 (cd hk && ./build-ios.sh)
 $CC -std=gnu11 -c lava5.c -o out/lava5.o
+$CC -std=gnu11 -c lava5r.c -o out/lava5r.o
 $CXX $CXXF -Ihk/include -c lavcc.cpp -o out/lavcc.o
 $CC -fno-objc-arc -c LavenderMetal.m -o out/LavenderMetal.o
 
 LIBS="$D/src/compiler/air/libair.a $(for a in $(cat $B/archives.txt); do [ $a = src/compiler/air/libair.a ] || echo -n "$D/$a "; done)"
 $CXX -arch arm64 -isysroot "$SDK" -target arm64-apple-ios16.0 -bundle -o out/LavenderMetal.bundle/LavenderMetal \
-	out/LavenderMetal.o out/lava5.o out/lavcc.o hk/out/*.o $LIBS -framework Foundation -framework IOKit -lc++ -lz -lm
+	out/LavenderMetal.o out/lava5.o out/lava5r.o out/lavcc.o hk/out/*.o $LIBS -framework Foundation -framework IOKit -lc++ -lz -lm
 cp LavenderMetal-Info.plist out/LavenderMetal.bundle/Info.plist
 codesign -s - -f out/LavenderMetal.bundle
 $CC -fobjc-arc -framework Foundation -framework Metal -framework IOKit -framework CoreFoundation -o out/lavmetal_test lavmetal_test.m
