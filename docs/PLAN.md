@@ -149,3 +149,17 @@ CP_LOAD_STATE4), `setFragmentTexture:`/`setFragmentSamplerState:`, `newSamplerSt
 pipeline's colour attachment (blend state proven on hardware in M4.6); (3) the rest CoreAnimation needs found by running its
 pipelines through the plug-in (log what is refused); only then (4) enabling the device for backboardd, which changes what
 CoreAnimation picks at boot and must be done behind a boot-arg with the CPU compositor as the fallback.
+
+## M5.6 (a) done (2026-11-22): fragment textures, samplers and blending through Metal
+
+lava5r.c emits the fragment stage's sampler and texture state (CP_LOAD_STATE4 into SB4_FS_TEX: TEX_SAMP 4 dwords, TEX_CONST 12 per
+unit, linear 8888, BGRA via swizzle; TPL1_FS_TEX_COUNT) and the blend state of target 0 (RB_MRT_CONTROL BLEND/BLEND2,
+RB_MRT_BLEND_CONTROL, SP/RB_BLEND_CNTL, constant colour). The plug-in has samplers (`newSamplerStateWithDescriptor:`; nearest/
+linear, mip filter, repeat / clamp / mirror), `setFragmentTexture:`, `setFragmentSamplerState:`, `setBlendColor`, and reads the blend
+factors/operations and write mask from the pipeline's colour attachment. lavmetal_test stages 15 (a 4x4 RGBA8 texture sampled
+nearest into a BGRA target: four quadrant colours exact) and 16 (SRC_ALPHA/ONE_MINUS_SRC_ALPHA over blue: centre 128/0/127) PASSED
+on the phone; output docs/m56a-phone-sampling-blend.txt. Texture and sampler indices equal Metal's [[texture(n)]]/[[sampler(n)]].
+One bug on the way: TEX_CONST_3 ARRAY_PITCH must be a multiple of 4096 (the generated macro asserts).
+Not yet: constexpr (inline) samplers, vertex-stage sampling, mip chains, other pixel formats (CoreAnimation uses many), depth,
+indexed draws, MSAA, loads from the target (LoadAction.load on non-surface targets works since memory is kept), the render target as
+a sampled texture in the same pass. Next: run QuartzCore's own pipelines through the plug-in and log what is refused.

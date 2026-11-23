@@ -56,3 +56,30 @@ fragment float4 tri_fs(TriOut in [[stage_in]])
 {
 	return in.color;
 }
+
+// ---- sampling and blending (M5.6) ----
+struct TexOut {
+	float4 pos [[position]];
+	float2 uv;
+};
+
+// a quad of two triangles from the vertex id: 0.9 of the target, uv with the origin at the top left
+vertex TexOut quad_vs(uint vid [[vertex_id]])
+{
+	TexOut o;
+	float x = (vid == 1 || vid == 4 || vid == 5) ? 1.0 : -1.0;
+	float y = (vid == 2 || vid == 3 || vid == 5) ? 1.0 : -1.0;
+	o.pos = float4(x * 0.9, y * 0.9, 0.0, 1.0);
+	o.uv = float2(x * 0.5 + 0.5, 0.5 - y * 0.5);
+	return o;
+}
+
+fragment float4 tex_fs(TexOut in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]])
+{
+	return t.sample(s, in.uv);
+}
+
+fragment float4 half_fs(TexOut in [[stage_in]])
+{
+	return float4(1.0, 0.0, 0.0, 0.5);
+}

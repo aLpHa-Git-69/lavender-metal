@@ -331,7 +331,7 @@ static unsigned int gPort;
 static Protocol * gProtocols[96];
 static unsigned gProtocolCount;
 static Class gBufferClass, gQueueClass, gCommandBufferClass, gBlitClass;
-static Class gTextureClass, gRenderPipeClass, gRenderClass;
+static Class gTextureClass, gRenderPipeClass, gRenderClass, gSamplerClass;
 
 static void
 keepProtocol(Protocol * p)
@@ -608,6 +608,8 @@ struct draw {
 	float viewport[6];
 	uint32_t scissor[4];
 	uint32_t cull, front_cw;
+	id ftex[16], fsamp[16];                 /* retained */
+	float blend_color[4];
 };
 
 struct op {
@@ -687,6 +689,10 @@ cbFreeOps(struct cbstate * st)
 
 			[w->pipeline release];
 			[w->target release];
+			for (int j = 0; j < 16; j++) {
+				[w->ftex[j] release];
+				[w->fsamp[j] release];
+			}
 			for (int j = 0; j < LAV5_MAX_BUFFERS; j++) {
 				[w->vbuf[j] release];
 				[w->fbuf[j] release];

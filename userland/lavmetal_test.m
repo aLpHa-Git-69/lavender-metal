@@ -13,6 +13,8 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <IOSurface/IOSurfaceRef.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <IOSurface/IOSurfaceRef.h>
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <signal.h>
@@ -463,6 +465,110 @@ main(int argc, char ** argv)
 						check(((rr >> 16) & 255) > ((rr >> 8) & 255) && (bb & 255) > ((bb >> 16) & 255) && ((gg >> 8) & 255) > (gg & 255), "red, green and blue corners");
 						check(covered > 500 && covered < 2500, "about a third covered");
 					}
+				}
+			}
+			/* M5.6: a fragment function that samples a texture, and blending */
+			if (gFailed == 0) {
+				printf("stage 15: quad_vs + tex_fs: sample a 4x4 texture (nearest, clamp) into a 64x64 target\n");
+				id<MTLFunction> vf = [lib newFunctionWithName:@"quad_vs"], ff = [lib newFunctionWithName:@"tex_fs"];
+				check(vf != nil && ff != nil, "quad_vs and tex_fs");
+				MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+				rpd.vertexFunction = vf;
+				rpd.fragmentFunction = ff;
+				rpd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+				id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+				check(rps != nil, "a render pipeline state with a sampled texture");
+				if (rps == nil && err != nil) {
+					printf("    %s\n", [[err localizedDescription] UTF8String]);
+				}
+				MTLTextureDescriptor * sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+				    width:4 height:4 mipmapped:NO];
+				id<MTLTexture> src = [device newTextureWithDescriptor:sd];
+				uint32_t texels[16];
+				for (int y = 0; y < 4; y++) {
+					for (int x = 0; x < 4; x++) {
+						/* RGBA8 in memory R,G,B,A: red, green / blue, yellow quadrants */
+						texels[y * 4 + x] = (x < 2 && y < 2) ? 0xff0000ffu : (x >= 2 && y < 2) ? 0xff00ff00u : (x < 2) ? 0xffff0000u : 0xff00ffffu;
+					}
+				}
+				[src replaceRegion:MTLRegionMake2D(0, 0, 4, 4) mipmapLevel:0 withBytes:texels bytesPerRow:16];
+				MTLSamplerDescriptor * smd = [MTLSamplerDescriptor new];
+				smd.minFilter = MTLSamplerMinMagFilterNearest;
+				smd.magFilter = MTLSamplerMinMagFilterNearest;
+				smd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+				smd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+				id<MTLSamplerState> samp = [device newSamplerStateWithDescriptor:smd];
+				check(src != nil && samp != nil, "a texture and a sampler state");
+				MTLTextureDescriptor * td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+				    width:64 height:64 mipmapped:NO];
+				td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+				id<MTLTexture> tex = [device newTextureWithDescriptor:td];
+				if (gFailed == 0) {
+					MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					pass.colorAttachments[0].texture = tex;
+					pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+					pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+					pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+					id<MTLCommandBuffer> cb = [queue commandBuffer];
+					id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+					[re setRenderPipelineState:rps];
+					[re setFragmentTexture:src atIndex:0];
+					[re setFragmentSamplerState:samp atIndex:0];
+					[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+					[re endEncoding];
+					[cb commit];
+					[cb waitUntilCompleted];
+					check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+					uint32_t px[64 * 64];
+					[tex getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+					uint32_t o = px[1 * 64 + 1], tl = px[16 * 64 + 16], tr = px[16 * 64 + 48], bl = px[48 * 64 + 16], br = px[48 * 64 + 48];
+					printf("  pixels: outside %08x, top-left %08x, top-right %08x, bottom-left %08x, bottom-right %08x\n", o, tl, tr, bl, br);
+					check(o == 0xff000000u, "outside the quad is the clear colour");
+					check(tl == 0xffff0000u, "top-left is red (BGRA ffff0000... as stored: red)");
+					check(tr == 0xff00ff00u, "top-right is green");
+					check(bl == 0xff0000ffu, "bottom-left is blue");
+					check(br == 0xffffff00u, "bottom-right is yellow");
+				}
+			}
+			if (gFailed == 0) {
+				printf("stage 16: blending: quad_vs + half_fs (red, alpha 0.5), SRC_ALPHA / ONE_MINUS_SRC_ALPHA, over blue\n");
+				id<MTLFunction> vf = [lib newFunctionWithName:@"quad_vs"], ff = [lib newFunctionWithName:@"half_fs"];
+				MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+				rpd.vertexFunction = vf;
+				rpd.fragmentFunction = ff;
+				rpd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+				rpd.colorAttachments[0].blendingEnabled = YES;
+				rpd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+				rpd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+				rpd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+				rpd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorZero;
+				id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+				check(rps != nil, "a blending render pipeline state");
+				MTLTextureDescriptor * td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+				    width:64 height:64 mipmapped:NO];
+				td.usage = MTLTextureUsageRenderTarget;
+				id<MTLTexture> tex = [device newTextureWithDescriptor:td];
+				if (gFailed == 0) {
+					MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					pass.colorAttachments[0].texture = tex;
+					pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+					pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+					pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 1, 1);
+					id<MTLCommandBuffer> cb = [queue commandBuffer];
+					id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+					[re setRenderPipelineState:rps];
+					[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+					[re endEncoding];
+					[cb commit];
+					[cb waitUntilCompleted];
+					check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+					uint32_t px[64 * 64];
+					[tex getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+					uint32_t o = px[1 * 64 + 1], c = px[32 * 64 + 32];
+					int r = (c >> 16) & 255, b = c & 255, g = (c >> 8) & 255;
+					printf("  pixels: outside %08x, centre %08x (r %d g %d b %d)\n", o, c, r, g, b);
+					check(o == 0xff0000ffu, "outside the quad is blue");
+					check(r > 118 && r < 137 && b > 118 && b < 137 && g < 8, "the centre is half red over half blue");
 				}
 			}
 		}

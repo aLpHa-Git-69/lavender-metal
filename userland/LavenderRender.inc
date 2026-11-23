@@ -256,6 +256,7 @@ texReplaceSlice(id self, SEL cmd, LavRegion r, uint64_t level, __unused uint64_t
 /* ---- the render pipeline state ---- */
 
 struct rpipe {
+	struct lav5_blend blend;
 	id vfn, ffn;                            /* retained */
 	struct lav5_stage vs, fs;
 	struct lav5_link link;
@@ -374,6 +375,39 @@ makeRenderPipeline(id desc, NSError ** err)
 		[o release];
 		return nil;
 	}
+	/* blending and the write mask, from colour attachment 0 */
+	{
+		id ca = msgAt(msg0(desc, "colorAttachments"), "objectAtIndexedSubscript:", 0);
+		static const uint8_t factor[15] = { 0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 16, 12, 13, 14, 15 };
+		uint64_t wm = msgU(ca, "writeMask");
+
+		rp->blend.writemask = ((wm >> 3) & 1) | (((wm >> 2) & 1) << 1) | (((wm >> 1) & 1) << 2) | ((wm & 1) << 3);
+		rp->blend.enable = msgU(ca, "isBlendingEnabled") & 0xff ? 1 : 0;
+		if (rp->blend.enable) {
+			uint64_t f[4] = { msgU(ca, "sourceRGBBlendFactor"), msgU(ca, "destinationRGBBlendFactor"),
+			    msgU(ca, "sourceAlphaBlendFactor"), msgU(ca, "destinationAlphaBlendFactor") };
+			uint64_t ops[2] = { msgU(ca, "rgbBlendOperation"), msgU(ca, "alphaBlendOperation") };
+
+			for (int i = 0; i < 4; i++) {
+				if (f[i] >= 15) {
+					lavlog("render pipeline: blend factor %llu is not served", (unsigned long long)f[i]);
+					goto refuse;
+				}
+			}
+			for (int i = 0; i < 2; i++) {
+				if (ops[i] > 4) {
+					lavlog("render pipeline: blend operation %llu is not served", (unsigned long long)ops[i]);
+					goto refuse;
+				}
+			}
+			rp->blend.rgb_src = factor[f[0]];
+			rp->blend.rgb_dst = factor[f[1]];
+			rp->blend.a_src = factor[f[2]];
+			rp->blend.a_dst = factor[f[3]];
+			rp->blend.rgb_op = (uint32_t)ops[0];
+			rp->blend.a_op = (uint32_t)ops[1];
+		}
+	}
 	rp->vfn = [vf retain];
 	rp->ffn = [ff retain];
 	lavlog("render pipeline %s + %s: %u+%u words, %u attributes", [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords,
@@ -462,6 +496,8 @@ struct renc {
 	float viewport[6];
 	uint32_t scissor[4];
 	uint32_t cull, front_cw;
+	id ftex[16], fsamp[16];
+	float blend_color[4];
 };
 
 static id
@@ -529,6 +565,10 @@ rencDealloc(id self, __unused SEL _cmd)
 		[re->fbuf[i] release];
 		free(re->vbytes[i]);
 		free(re->fbytes[i]);
+	}
+	for (int i = 0; i < 16; i++) {
+		[re->ftex[i] release];
+		[re->fsamp[i] release];
 	}
 	[re->pipeline release];
 	[re->target release];
@@ -651,6 +691,113 @@ rencSetScissor(id self, __unused SEL _cmd, LavScissor r)
 }
 
 static void
+rencSetFTexture(id self, __unused SEL _cmd, id tex, uint64_t index)
+{
+	struct renc * re = STATE(self, struct renc);
+
+	if (index >= 16) {
+		lavlog("setFragmentTexture at index %llu: the table holds 16", (unsigned long long)index);
+		return;
+	}
+	if (tex != nil && object_getClass(tex) != gTextureClass) {
+		lavlog("setFragmentTexture: not a texture of this driver");
+		return;
+	}
+	[tex retain];
+	[re->ftex[index] release];
+	re->ftex[index] = tex;
+}
+
+static void
+rencSetFSampler(id self, __unused SEL _cmd, id samp, uint64_t index)
+{
+	struct renc * re = STATE(self, struct renc);
+
+	if (index >= 16) {
+		lavlog("setFragmentSamplerState at index %llu: the table holds 16", (unsigned long long)index);
+		return;
+	}
+	[samp retain];
+	[re->fsamp[index] release];
+	re->fsamp[index] = samp;
+}
+
+static void
+rencSetFSamplerLod(id self, SEL cmd, id samp, __unused float lo, __unused float hi, uint64_t index)
+{
+	rencSetFSampler(self, cmd, samp, index);
+}
+
+static void
+rencSetFTextures(id self, SEL cmd, const id * texs, NSRange range)
+{
+	for (NSUInteger i = 0; i < range.length; i++) {
+		rencSetFTexture(self, cmd, texs[i], range.location + i);
+	}
+}
+
+static void
+rencSetFSamplers(id self, SEL cmd, const id * samps, NSRange range)
+{
+	for (NSUInteger i = 0; i < range.length; i++) {
+		rencSetFSampler(self, cmd, samps[i], range.location + i);
+	}
+}
+
+static void
+rencSetVTexture(__unused id self, __unused SEL _cmd, __unused id tex, __unused uint64_t index)
+{
+	lavlog("setVertexTexture: sampling in the vertex stage is not served");
+}
+
+static void
+rencSetBlendColor(id self, __unused SEL _cmd, float r, float g, float b, float a)
+{
+	struct renc * re = STATE(self, struct renc);
+
+	re->blend_color[0] = r;
+	re->blend_color[1] = g;
+	re->blend_color[2] = b;
+	re->blend_color[3] = a;
+}
+
+/* ---- samplers ---- */
+
+static id
+deviceNewSampler(__unused id self, __unused SEL _cmd, id desc)
+{
+	id o = makeObject(gSamplerClass, sizeof(struct lav5_samp));
+	struct lav5_samp * sp;
+	uint64_t mode[2] = { msgU(desc, "sAddressMode"), msgU(desc, "tAddressMode") };
+	uint32_t wrap[2];
+
+	if (o == nil) {
+		return nil;
+	}
+	for (int i = 0; i < 2; i++) {
+		wrap[i] = mode[i] == 2 ? 0 : mode[i] == 3 ? 2 : 1;
+		if (mode[i] > 3) {
+			lavlog("newSamplerState: address mode %llu approximated by clamp to edge", (unsigned long long)mode[i]);
+		}
+	}
+	sp = STATE(o, struct lav5_samp);
+	memset(sp, 0, sizeof(*sp));
+	sp->mag = msgU(desc, "magFilter") == 1;
+	sp->min = msgU(desc, "minFilter") == 1;
+	sp->mip_linear = msgU(desc, "mipFilter") == 2;
+	sp->wrap_s = wrap[0];
+	sp->wrap_t = wrap[1];
+	sp->valid = 1;
+	if (!(msgU(desc, "normalizedCoordinates") & 0xff)) {
+		lavlog("newSamplerState: unnormalized coordinates are not served (ignored)");
+	}
+	return o;
+}
+
+static id sampLabel(__unused id self, __unused SEL _cmd) { return nil; }
+static void sampSetLabel(__unused id self, __unused SEL _cmd, __unused id label) { }
+
+static void
 rencSetCull(id self, __unused SEL _cmd, uint64_t mode)
 {
 	STATE(self, struct renc)->cull = (uint32_t)mode;
@@ -720,6 +867,11 @@ rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t ins
 	memcpy(d->scissor, re->scissor, sizeof(d->scissor));
 	d->cull = re->cull;
 	d->front_cw = re->front_cw;
+	for (int i = 0; i < 16; i++) {
+		d->ftex[i] = [re->ftex[i] retain];
+		d->fsamp[i] = [re->fsamp[i] retain];
+	}
+	memcpy(d->blend_color, re->blend_color, sizeof(d->blend_color));
 }
 
 static void
@@ -861,6 +1013,18 @@ runDraw(struct op * op)
 	memcpy(r->scissor, d->scissor, sizeof(r->scissor));
 	r->cull = d->cull;
 	r->front_cw = d->front_cw;
+	r->blend = rp->blend;
+	memcpy(r->blend_color, d->blend_color, sizeof(r->blend_color));
+	for (int i = 0; i < 16; i++) {
+		if (d->ftex[i] != nil) {
+			struct texstate * ts = STATE(d->ftex[i], struct texstate);
+
+			r->tex[i] = (struct lav5_tex){ ts->b.gpu, ts->width, ts->height, ts->pitch, ts->format == PF_BGRA8, 1 };
+		}
+		if (d->fsamp[i] != nil) {
+			r->samp[i] = *STATE(d->fsamp[i], struct lav5_samp);
+		}
+	}
 	r->flush_gpu = gStream.gpu + SCRATCH_OFFSET + 64;
 	w = malloc(STREAM_WORDS * 4);
 	n = lav5_build_render(w, STREAM_WORDS, r, &why);

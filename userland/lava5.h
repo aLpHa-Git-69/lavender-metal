@@ -111,6 +111,26 @@ struct lav5_vbuf {
 	uint32_t stride;
 };
 
+/* a texture bound for the fragment stage: linear 2D, 8888 */
+struct lav5_tex {
+	uint64_t gpu;
+	uint32_t width, height, pitch;
+	uint32_t bgra;                              /* 1: B,G,R,A in memory (bgra8Unorm), 0: R,G,B,A */
+	uint32_t valid;
+};
+
+/* a sampler: filters 0 nearest / 1 linear; wrap 0 repeat / 1 clamp to edge / 2 mirror repeat */
+struct lav5_samp {
+	uint32_t mag, min, mip_linear, wrap_s, wrap_t;
+	uint32_t valid;
+};
+
+struct lav5_blend {
+	uint32_t enable;
+	uint32_t rgb_src, rgb_dst, rgb_op, a_src, a_dst, a_op;    /* a5xx values (FACTOR_*, BLEND_*) */
+	uint32_t writemask;                         /* RGBA bits, 0xf default */
+};
+
 struct lav5_render {
 	const struct lav5_stage * vs, * fs;
 	const struct lav5_link * link;
@@ -129,6 +149,10 @@ struct lav5_render {
 	uint32_t cull;                              /* 0 none, 1 front, 2 back */
 	uint32_t front_cw;
 	uint64_t flush_gpu;
+	struct lav5_tex tex[16];                    /* fragment stage, by Metal index */
+	struct lav5_samp samp[16];
+	struct lav5_blend blend;
+	float blend_color[4];
 };
 
 /* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */

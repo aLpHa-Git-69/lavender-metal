@@ -569,16 +569,100 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		}
 	}
 
-	/* blend off, colour write mask 0xf */
-	for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
-		set(s, REG_A5XX_RB_MRT_CONTROL(i), A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(i == 0 ? 0xf : 0));
-		set(s, REG_A5XX_RB_MRT_BLEND_CONTROL(i),
-		    A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(FACTOR_ZERO) |
-		    A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(FACTOR_ZERO));
+	/* blend (fd5_blend_state_create): target 0 as the pipeline says, the others off */
+	{
+		const struct lav5_blend * b = &r->blend;
+		uint32_t mask = b->enable ? 1 : 0;
+
+		for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
+			uint32_t ctl = A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(i == 0 ? b->writemask : 0);
+			uint32_t bc = A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(FACTOR_ZERO) |
+			    A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(FACTOR_ZERO);
+
+			if (i == 0 && b->enable) {
+				ctl |= A5XX_RB_MRT_CONTROL_BLEND | A5XX_RB_MRT_CONTROL_BLEND2;
+				bc = A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(b->rgb_src) | A5XX_RB_MRT_BLEND_CONTROL_RGB_BLEND_OPCODE(b->rgb_op) |
+				    A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(b->rgb_dst) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(b->a_src) |
+				    A5XX_RB_MRT_BLEND_CONTROL_ALPHA_BLEND_OPCODE(b->a_op) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(b->a_dst);
+			}
+			set(s, REG_A5XX_RB_MRT_CONTROL(i), ctl);
+			set(s, REG_A5XX_RB_MRT_BLEND_CONTROL(i), bc);
+		}
+		set(s, REG_A5XX_SP_BLEND_CNTL, A5XX_SP_BLEND_CNTL_ENABLE_BLEND(mask) | A5XX_SP_BLEND_CNTL_UNK8);
+		set(s, REG_A5XX_RB_BLEND_CNTL, A5XX_RB_BLEND_CNTL_ENABLE_BLEND(mask) | A5XX_RB_BLEND_CNTL_SAMPLE_MASK(0xffff));
+		if (b->enable) {
+			/* the constant blend colour (fd5_emit_state, FD_DIRTY_BLEND_COLOR) */
+			pkt4(s, REG_A5XX_RB_BLEND_RED, 8);
+			for (i = 0; i < 4; i++) {
+				float c = r->blend_color[i], cl = c < 0 ? 0 : c > 1 ? 1 : c, cs = c < -1 ? -1 : c > 1 ? 1 : c;
+				uint32_t f16 = _mesa_float_to_half(c) & 0xffff, u8 = (uint32_t)(cl * 0xff) & 0xff, s8 = (uint32_t)(int32_t)(cs * 0x7f) & 0xff;
+
+				out(s, f16 | (u8 << 16) | (s8 << 24));
+				out(s, fui(c));
+			}
+		}
 	}
-	set(s, REG_A5XX_SP_BLEND_CNTL, A5XX_SP_BLEND_CNTL_UNK8);
-	set(s, REG_A5XX_RB_BLEND_CNTL, A5XX_RB_BLEND_CNTL_SAMPLE_MASK(0xffff));
-	set(s, REG_A5XX_TPL1_FS_TEX_COUNT, 0);
+
+	/* textures and samplers of the fragment stage (emit_textures): units 0..n-1, n the highest index used + 1 */
+	{
+		uint32_t nt = 0, ns = 0;
+
+		for (i = 0; i < 16; i++) {
+			if (r->tex[i].valid) {
+				nt = i + 1;
+			}
+			if (r->samp[i].valid) {
+				ns = i + 1;
+			}
+		}
+		if (ns > 0) {
+			pkt7(s, CP_LOAD_STATE4, 3 + 4 * ns);
+			out(s, CP_LOAD_STATE4_0_DST_OFF(0) | CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) | CP_LOAD_STATE4_0_STATE_BLOCK(SB4_FS_TEX) |
+			    CP_LOAD_STATE4_0_NUM_UNIT(ns));
+			out(s, CP_LOAD_STATE4_1_STATE_TYPE(ST4_SHADER) | CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
+			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+			for (i = 0; i < ns; i++) {
+				const struct lav5_samp * sp = &r->samp[i];
+				enum a5xx_tex_filter mag = sp->mag ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST, min = sp->min ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST;
+				enum a5xx_tex_clamp ws = sp->wrap_s == 0 ? A5XX_TEX_REPEAT : sp->wrap_s == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
+				enum a5xx_tex_clamp wt = sp->wrap_t == 0 ? A5XX_TEX_REPEAT : sp->wrap_t == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
+
+				out(s, COND(sp->mip_linear, A5XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) | A5XX_TEX_SAMP_0_XY_MAG(mag) |
+				    A5XX_TEX_SAMP_0_XY_MIN(min) | A5XX_TEX_SAMP_0_WRAP_S(ws) | A5XX_TEX_SAMP_0_WRAP_T(wt) |
+				    A5XX_TEX_SAMP_0_WRAP_R(A5XX_TEX_CLAMP_TO_EDGE));
+				out(s, A5XX_TEX_SAMP_1_MIN_LOD(0.0f) | A5XX_TEX_SAMP_1_MAX_LOD(0.125f) | A5XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF);
+				out(s, A5XX_TEX_SAMP_2_BCOLOR_OFFSET(i));
+				out(s, 0);
+			}
+		}
+		if (nt > 0) {
+			pkt7(s, CP_LOAD_STATE4, 3 + 12 * nt);
+			out(s, CP_LOAD_STATE4_0_DST_OFF(0) | CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) | CP_LOAD_STATE4_0_STATE_BLOCK(SB4_FS_TEX) |
+			    CP_LOAD_STATE4_0_NUM_UNIT(nt));
+			out(s, CP_LOAD_STATE4_1_STATE_TYPE(ST4_CONSTANTS) | CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
+			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+			for (i = 0; i < nt; i++) {
+				const struct lav5_tex * t = &r->tex[i];
+				uint32_t sx = A5XX_TEX_X, sz = A5XX_TEX_Z;
+
+				if (t->valid && t->bgra) {
+					sx = A5XX_TEX_Z;
+					sz = A5XX_TEX_X;
+				}
+				out(s, A5XX_TEX_CONST_0_FMT(TFMT5_8_8_8_8_UNORM) | A5XX_TEX_CONST_0_TILE_MODE(TILE5_LINEAR) | A5XX_TEX_CONST_0_SWIZ_X(sx) |
+				    A5XX_TEX_CONST_0_SWIZ_Y(A5XX_TEX_Y) | A5XX_TEX_CONST_0_SWIZ_Z(sz) | A5XX_TEX_CONST_0_SWIZ_W(A5XX_TEX_W));
+				out(s, A5XX_TEX_CONST_1_WIDTH(t->width) | A5XX_TEX_CONST_1_HEIGHT(t->height));
+				out(s, A5XX_TEX_CONST_2_PITCHALIGN(0) | A5XX_TEX_CONST_2_PITCH(t->pitch) | A5XX_TEX_CONST_2_TYPE(A5XX_TEX_2D));
+				out(s, A5XX_TEX_CONST_3_ARRAY_PITCH((t->pitch * t->height + 4095) & ~4095u));
+				out(s, (uint32_t)t->gpu);
+				out(s, (uint32_t)(t->gpu >> 32) | A5XX_TEX_CONST_5_DEPTH(1));
+				for (j = 0; j < 6; j++) {
+					out(s, 0);
+				}
+			}
+		}
+		set(s, REG_A5XX_TPL1_FS_TEX_COUNT, nt);
+	}
 	set(s, REG_A5XX_TPL1_CS_TEX_COUNT, 0);
 
 	/* vertex buffers: one fetch and one decode per attribute (fd5_emit_vertex_bufs) */

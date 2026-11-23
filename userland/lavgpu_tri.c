@@ -173,6 +173,7 @@ draw(const char * name, struct lav5_stage * vs, struct lav5_stage * fs, struct l
 	r.viewport[0] = 0; r.viewport[1] = 0; r.viewport[2] = W; r.viewport[3] = H; r.viewport[4] = 0; r.viewport[5] = 1;
 	r.scissor[0] = 0; r.scissor[1] = 0; r.scissor[2] = W; r.scissor[3] = H;
 	r.cull = 0;
+	r.blend.writemask = 0xf;
 	r.front_cw = 1;
 	r.flush_gpu = stream.gpu + 0x8000 + 64;
 	((uint32_t *)(stream.cpu + 0x8000 + 64))[0] = 0;

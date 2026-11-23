@@ -5,6 +5,7 @@ registerRenderClasses(Class device)
 {
 	static const char * const tex[] = { "MTLTexture", "MTLResource", NULL };
 	static const char * const rps[] = { "MTLRenderPipelineState", NULL };
+	static const char * const smp[] = { "MTLSamplerState", NULL };
 	static const char * const rce[] = { "MTLRenderCommandEncoder", "MTLCommandEncoder", NULL };
 
 	if ((gTextureClass = newClass("LavenderMetalTexture", "_MTLTexture")) != Nil) {
@@ -51,6 +52,15 @@ registerRenderClasses(Class device)
 		ADD(device, "newRenderPipelineStateWithDescriptor:options:reflection:error:", deviceNewRenderPipelineOptions, "@@:@Q^@^@");
 		ADD(device, "newRenderPipelineStateWithDescriptor:completionHandler:", deviceNewRenderPipelineAsync, "v@:@@?");
 	}
+	if ((gSamplerClass = newClass("LavenderMetalSampler", "_MTLSamplerState")) != Nil) {
+		declareNamed(gSamplerClass, smp);
+		addStubForwarding(gSamplerClass);
+		ADD(gSamplerClass, "device", objDevice, "@@:");
+		ADD(gSamplerClass, "label", sampLabel, "@@:");
+		ADD(gSamplerClass, "setLabel:", sampSetLabel, "v@:@");
+		objc_registerClassPair(gSamplerClass);
+		ADD(device, "newSamplerStateWithDescriptor:", deviceNewSampler, "@@:@");
+	}
 	if ((gRenderClass = newClass("LavenderMetalRenderEncoder", "_MTLCommandEncoder")) != Nil) {
 		declareNamed(gRenderClass, rce);
 		addStubForwarding(gRenderClass);
@@ -67,6 +77,13 @@ registerRenderClasses(Class device)
 		ADD(gRenderClass, "setFragmentBytes:length:atIndex:", rencSetFBytes, "v@:r^vQQ");
 		ADD(gRenderClass, "setViewport:", rencSetViewport, "v@:{_MTLViewport=dddddd}");
 		ADD(gRenderClass, "setScissorRect:", rencSetScissor, "v@:{_MTLScissorRect=QQQQ}");
+		ADD(gRenderClass, "setFragmentTexture:atIndex:", rencSetFTexture, "v@:@Q");
+		ADD(gRenderClass, "setFragmentTextures:withRange:", rencSetFTextures, "v@:r^@{_NSRange=QQ}");
+		ADD(gRenderClass, "setFragmentSamplerState:atIndex:", rencSetFSampler, "v@:@Q");
+		ADD(gRenderClass, "setFragmentSamplerState:lodMinClamp:lodMaxClamp:atIndex:", rencSetFSamplerLod, "v@:@ffQ");
+		ADD(gRenderClass, "setFragmentSamplerStates:withRange:", rencSetFSamplers, "v@:r^@{_NSRange=QQ}");
+		ADD(gRenderClass, "setVertexTexture:atIndex:", rencSetVTexture, "v@:@Q");
+		ADD(gRenderClass, "setBlendColorRed:green:blue:alpha:", rencSetBlendColor, "v@:ffff");
 		ADD(gRenderClass, "setCullMode:", rencSetCull, "v@:Q");
 		ADD(gRenderClass, "setFrontFacingWinding:", rencSetWinding, "v@:Q");
 		ADD(gRenderClass, "setTriangleFillMode:", rencIgnore, "v@:Q");
