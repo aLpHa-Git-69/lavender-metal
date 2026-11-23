@@ -19,6 +19,8 @@ LIBS="$D/src/compiler/air/libair.a $(for a in $(cat $B/archives.txt); do [ $a = 
 $CXX -arch arm64 -isysroot "$SDK" -target arm64-apple-ios16.0 -bundle -o out/LavenderMetal.bundle/LavenderMetal \
 	out/LavenderMetal.o out/lava5.o out/lava5r.o out/lavcc.o hk/out/*.o $LIBS -framework Foundation -framework IOKit -framework IOSurface -lc++ -lz -lm
 cp LavenderMetal-Info.plist out/LavenderMetal.bundle/Info.plist
+# the plug-in fails to load (Metal returns no device) once the unstripped binary grows past ~8.27 MB: strip it
+strip -x out/LavenderMetal.bundle/LavenderMetal 2>/dev/null
 codesign -s - -f out/LavenderMetal.bundle
 $CC -fobjc-arc -framework Foundation -framework Metal -framework QuartzCore -framework IOSurface -framework IOKit -framework CoreFoundation -o out/lavmetal_test lavmetal_test.m
 codesign -s - -f out/lavmetal_test

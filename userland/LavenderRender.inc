@@ -865,8 +865,8 @@ rencAddDraw(id self, uint64_t type, uint64_t first, uint64_t count, uint64_t ins
 	struct draw * d;
 	static const uint32_t prims[5] = { 9, 2, 3, 4, 6 };     /* point, line, line strip, triangle, triangle strip */
 
-	if (re->pipeline == nil || type >= 5 || type == 0) {
-		lavlog("a draw with no pipeline state, or of primitive type %llu (points are not served)", (unsigned long long)type);
+	if (re->pipeline == nil || type >= 5) {
+		lavlog("a draw with no pipeline state, or of primitive type %llu", (unsigned long long)type);
 		return;
 	}
 	op = cbAddOp(STATE(re->commandBuffer, struct cbstate));

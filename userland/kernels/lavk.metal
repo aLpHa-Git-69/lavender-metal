@@ -109,3 +109,22 @@ fragment MrtOut mrt_fs(TexOut in [[stage_in]])
 	o.c2 = float4(in.uv.x, in.uv.y, 1.0, 1.0);
 	return o;
 }
+
+// ---- point size (M5.6): CoreAnimation's fixed_vert_* functions write them ----
+struct PtOut {
+	float4 pos [[position]];
+	float size [[point_size]];
+};
+
+vertex PtOut point_vs(uint vid [[vertex_id]])
+{
+	PtOut o;
+	o.pos = float4(0.0, 0.0, 0.0, 1.0);
+	o.size = 8.0;
+	return o;
+}
+
+fragment float4 white_fs()
+{
+	return float4(1.0, 1.0, 1.0, 1.0);
+}

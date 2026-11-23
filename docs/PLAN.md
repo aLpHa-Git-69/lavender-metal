@@ -196,3 +196,15 @@ per-target blend (INDEPENDENT_BLEND when nrt > 1) and RB_RENDER_COMPONENTS RT0..
 The plug-in takes colour attachments 0..7 (same-size textures of this driver; a clear per attachment) and blend/write mask per
 attachment from the pipeline descriptor. lavmetal_test stage 18 (`mrt_fs`: red, green, uv into three targets) PASSED on the phone.
 docs/m56d-phone-mrt.txt. Clears the 34 MRT fragment functions of QuartzCore. Next: point size / clip distances (4 fixed_vert_*).
+
+## M5.6 (e) done (2026-11-23): point size (and clip distances, untested)
+
+The vertex stage may now write `[[point_size]]`: PC_PRIM_VTX_CNTL.PSIZE, psize_loc in VPC_PACK (hk's link already placed it), point
+size max 4092 (1 without a point size). The plug-in serves `MTLPrimitiveTypePoint` (prim 9). lavmetal_test stage 19 (`point_vs`,
+size 8): exactly 64 white pixels at x 28..35, PASSED on the phone (docs/m56e-phone-point-size.txt). Clip/cull distances are wired
+in lava5r.c like Mesa's fd5 (slots 17/18 after position and point size, GRAS_VS_CL_CNTL, VPC_CLIP_CNTL, PC_CLIP_CNTL) but UNTESTED:
+the hk front end refuses `[[clip_distance]]` arrays ("no varying for an array of N"). QuartzCore's four fixed_vert_* need only the
+point size, so clip distances are not on the path.
+Loader limit found: with the unstripped binary at 8.28 MB (8,284,704 bytes) Metal returned no device and the plug-in never ran (8,268,352
+loaded); `strip -x` (7.9 MB) fixes it, so build-lavmetal.sh strips before signing.
+Next: run QuartzCore pipelines through the plug-in, then enable the device for backboardd behind a boot-arg.

@@ -258,12 +258,28 @@ emit_stage_consts(struct st * s, enum a4xx_state_block sb, const struct lav5_ker
 	return NULL;
 }
 
+/* gl_varying_slot numbers the compiler reports the vertex outputs with */
+#define SLOT_CLIP0 17
+#define SLOT_CLIP1 18
+
+static int
+find_out(const struct lav5_stage * s, unsigned slot)
+{
+	for (unsigned i = 0; i < s->nout; i++) {
+		if (s->out[i].slot == slot) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
 const char *
 lav5_refuse_stage(const struct lav5_stage * s)
 {
 	if (!s->is_fragment) {
-		if (s->clip_mask || s->cull_mask || VALIDREG(s->point_size_regid)) {
-			return "the vertex stage writes clip distances or a point size";
+		if (((s->clip_mask | s->cull_mask) && (find_out(s, SLOT_CLIP0) < 0 && find_out(s, SLOT_CLIP1) < 0)) ||
+		    ((s->clip_mask | s->cull_mask) & ~0xffu)) {
+			return "the vertex stage's clip or cull distances are not among its outputs";
 		}
 		if (!VALIDREG(s->position_regid)) {
 			return "the vertex stage writes no position";
@@ -288,7 +304,9 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 {
 	struct st st = { words, 0, cap, 0 }, * s = &st;
 	const struct lav5_stage * vs = r->vs, * fs = r->fs;
-	const struct lav5_link * l = r->link;
+	struct lav5_link lk = *r->link;
+	const struct lav5_link * l = &lk;
+	uint32_t clip_cull = vs->clip_mask | vs->cull_mask, clip0_loc = 0xff, clip1_loc = 0xff;
 	unsigned vs_instrlen = vs->k.instrlen, fs_instrlen = fs->k.instrlen;
 	unsigned vs_constlen = vs->k.constlen / 4, fs_constlen = fs->k.constlen / 4;
 	unsigned vs_constoff = 0, fs_constoff = vs_constlen;
@@ -308,10 +326,6 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		*why = "the vertex stage's attributes and the vertex descriptor's differ in number";
 		return 0;
 	}
-	if (vs->clip_mask || vs->cull_mask || VALIDREG(psize_regid)) {
-		*why = "the vertex stage writes clip distances or a point size: not served yet";
-		return 0;
-	}
 	if (!VALIDREG(pos_regid)) {
 		*why = "the vertex stage writes no position";
 		return 0;
@@ -320,6 +334,34 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		*why = e;
 		return 0;
 	}
+	/* clip and cull distances go after the position and the point size in the VPC (fd5_program.c) */
+	if (clip_cull) {
+		int k0 = find_out(vs, SLOT_CLIP0), k1 = find_out(vs, SLOT_CLIP1);
+
+		if ((clip_cull & 0xf) && k0 >= 0 && lk.cnt < 32 && lk.max_loc + 4 <= 32) {
+			clip0_loc = lk.max_loc;
+			lk.var[lk.cnt].slot = SLOT_CLIP0;
+			lk.var[lk.cnt].regid = vs->out[k0].regid;
+			lk.var[lk.cnt].compmask = clip_cull & 0xf;
+			lk.var[lk.cnt].loc = (uint8_t)lk.max_loc;
+			lk.cnt++;
+			lk.max_loc += 4;
+		}
+		if ((clip_cull >> 4) && k1 >= 0 && lk.cnt < 32 && lk.max_loc + 4 <= 32) {
+			clip1_loc = lk.max_loc;
+			lk.var[lk.cnt].slot = SLOT_CLIP1;
+			lk.var[lk.cnt].regid = vs->out[k1].regid;
+			lk.var[lk.cnt].compmask = clip_cull >> 4;
+			lk.var[lk.cnt].loc = (uint8_t)lk.max_loc;
+			lk.cnt++;
+			lk.max_loc += 4;
+		}
+		if (clip0_loc == 0xff && clip1_loc == 0xff) {
+			*why = "the vertex stage's clip distances have no room in the VPC";
+			return 0;
+		}
+	}
+
 	/* setup_stages: when both do not fit the instruction memory, one or both run from external memory */
 	if (vs_instrlen + fs_instrlen > 64) {
 		if (fs_instrlen < 64) {
@@ -500,7 +542,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	if (vs_instrlen) {
 		emit_shader(s, SB4_VS_SHADER, r->vs_code, vs_instrlen);
 	}
-	set(s, REG_A5XX_PC_PRIM_VTX_CNTL, 0);
+	set(s, REG_A5XX_PC_PRIM_VTX_CNTL, COND(VALIDREG(psize_regid), A5XX_PC_PRIM_VTX_CNTL_PSIZE));
 	set(s, REG_A5XX_SP_PRIMITIVE_CNTL, A5XX_SP_PRIMITIVE_CNTL_VSOUT(l->cnt));
 	set(s, REG_A5XX_VPC_CNTL_0, A5XX_VPC_CNTL_0_STRIDE_IN_VPC(l->max_loc) | COND(fs->total_in > 0, A5XX_VPC_CNTL_0_VARYING) | 0x10000);
 	emit_shader_obj(s, REG_A5XX_SP_FS_OBJ_START_LO, r->fs_code);
@@ -560,9 +602,10 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		out(s, l->interp[i]);
 	}
 	zeros(s, REG_A5XX_VPC_VARYING_PS_REPL_MODE(0), 8);
-	set(s, REG_A5XX_GRAS_VS_CL_CNTL, 0);
-	set(s, REG_A5XX_VPC_CLIP_CNTL, A5XX_VPC_CLIP_CNTL_CLIP_DIST_03_LOC(0xff) | A5XX_VPC_CLIP_CNTL_CLIP_DIST_47_LOC(0xff));
-	set(s, REG_A5XX_PC_CLIP_CNTL, 0);
+	set(s, REG_A5XX_GRAS_VS_CL_CNTL, A5XX_GRAS_VS_CL_CNTL_CLIP_MASK(vs->clip_mask) | A5XX_GRAS_VS_CL_CNTL_CULL_MASK(vs->cull_mask));
+	set(s, REG_A5XX_VPC_CLIP_CNTL, A5XX_VPC_CLIP_CNTL_CLIP_MASK(clip_cull) | A5XX_VPC_CLIP_CNTL_CLIP_DIST_03_LOC(clip0_loc) |
+	    A5XX_VPC_CLIP_CNTL_CLIP_DIST_47_LOC(clip1_loc));
+	set(s, REG_A5XX_PC_CLIP_CNTL, A5XX_PC_CLIP_CNTL_CLIP_MASK(vs->clip_mask));
 	if (fs_instrlen) {
 		emit_shader(s, SB4_FS_SHADER, r->fs_code, fs_instrlen);
 	}
@@ -578,7 +621,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	    COND(r->cull & 1, A5XX_GRAS_SU_CNTL_CULL_FRONT) | COND(r->cull & 2, A5XX_GRAS_SU_CNTL_CULL_BACK) |
 	    COND(r->front_cw, A5XX_GRAS_SU_CNTL_FRONT_CW));
 	pkt4(s, REG_A5XX_GRAS_SU_POINT_MINMAX, 2);
-	out(s, A5XX_GRAS_SU_POINT_MINMAX_MIN(1.0f) | A5XX_GRAS_SU_POINT_MINMAX_MAX(1.0f));
+	out(s, A5XX_GRAS_SU_POINT_MINMAX_MIN(1.0f) | A5XX_GRAS_SU_POINT_MINMAX_MAX(VALIDREG(psize_regid) ? 4092.0f : 1.0f));
 	out(s, A5XX_GRAS_SU_POINT_SIZE(1.0f));
 	zeros(s, REG_A5XX_GRAS_SU_POLY_OFFSET_SCALE, 3);
 	set(s, REG_A5XX_PC_RASTER_CNTL, 0);

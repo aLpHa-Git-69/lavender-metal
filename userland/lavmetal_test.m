@@ -678,6 +678,49 @@ main(int argc, char ** argv)
 					check(((tl[2] >> 16) & 255) < 40 && ((tl[2] >> 8) & 255) < 40, "target 2 is near zero at the top left");
 				}
 			}
+			if (gFailed == 0) {
+				printf("stage 19: point_vs + white_fs: a point of size 8\n");
+				id<MTLFunction> vf = [lib newFunctionWithName:@"point_vs"], ff = [lib newFunctionWithName:@"white_fs"];
+				check(vf != nil && ff != nil, "point_vs and white_fs");
+				MTLRenderPipelineDescriptor * rpd = [MTLRenderPipelineDescriptor new];
+				rpd.vertexFunction = vf;
+				rpd.fragmentFunction = ff;
+				rpd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+				id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rpd error:&err];
+				check(rps != nil, "a render pipeline state");
+				MTLTextureDescriptor * td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+				    width:64 height:64 mipmapped:NO];
+				td.usage = MTLTextureUsageRenderTarget;
+				id<MTLTexture> tex = [device newTextureWithDescriptor:td];
+				if (gFailed == 0) {
+					MTLRenderPassDescriptor * pass = [MTLRenderPassDescriptor renderPassDescriptor];
+					pass.colorAttachments[0].texture = tex;
+					pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+					pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+					pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+					id<MTLCommandBuffer> cb = [queue commandBuffer];
+					id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+					[re setRenderPipelineState:rps];
+					[re drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:1];
+					[re endEncoding];
+					[cb commit];
+					[cb waitUntilCompleted];
+					check([cb status] == MTLCommandBufferStatusCompleted, "the command buffer completed");
+					uint32_t px[64 * 64];
+					[tex getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+					int white = 0, minx = 64, maxx = -1;
+					for (int i = 0; i < 64 * 64; i++) {
+						if (px[i] == 0xffffffffu) {
+							white++;
+							minx = (i % 64) < minx ? (i % 64) : minx;
+							maxx = (i % 64) > maxx ? (i % 64) : maxx;
+						}
+					}
+					printf("  %d white pixels, x %d..%d\n", white, minx, maxx);
+					check(white >= 36 && white <= 100, "the point is about 8x8 pixels");
+					check(px[32 * 64 + 32] == 0xffffffffu, "the centre is white");
+				}
+			}
 		}
 
 		kr = metalProps(conn, 0);
