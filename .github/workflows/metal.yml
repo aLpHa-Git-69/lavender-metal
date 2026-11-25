@@ -40,7 +40,7 @@ jobs:
 
       - name: Restore Mesa 25.0.7 iOS archives cache
         id: mesa-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             /tmp/mi/archives.txt
@@ -61,6 +61,19 @@ jobs:
             echo "=== ninja.log ==="; tail -n 80 /tmp/mi/ninja.log 2>/dev/null || true
             exit 1
           fi
+
+      - name: Save Mesa 25.0.7 iOS archives cache
+        if: steps.mesa-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /tmp/mi/archives.txt
+            /tmp/mi/build/build.ninja
+            /tmp/mi/build/src
+            /tmp/mi/mesa-25.0.7/src
+            /tmp/mi/mesa-25.0.7/include
+            /tmp/mi/mesa-25.0.7/.hakios-patches
+          key: mesa-ios-25.0.7-x86_64-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh') }}
 
       - name: Build LavenderMetal.bundle and test tools
         run: |
