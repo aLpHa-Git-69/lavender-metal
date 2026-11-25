@@ -20,13 +20,13 @@ env:
 jobs:
   build:
     name: LavenderMetal iOS arm64 bundle
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - name: Host A5xx tests
-        run: make -C userland test
+        run: rm -rf userland/build && make -C userland test
 
       - name: Fetch hakios Mesa AIR patches (pinned)
         run: |
@@ -49,14 +49,18 @@ jobs:
             /tmp/mi/mesa-25.0.7/src
             /tmp/mi/mesa-25.0.7/include
             /tmp/mi/mesa-25.0.7/.hakios-patches
-          key: mesa-ios-25.0.7-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh') }}
+          key: mesa-ios-25.0.7-x86_64-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh') }}
 
       - name: Build Mesa 25.0.7 + AIR front end for iOS arm64
         if: steps.mesa-cache.outputs.cache-hit != 'true'
         run: |
           sw_vers
           xcodebuild -version
-          B=/tmp/mi bash tools/mesa-ios/build-mac.sh refs/hakios/components/metal/plugin/tools/mesa
+          if ! B=/tmp/mi bash tools/mesa-ios/build-mac.sh refs/hakios/components/metal/plugin/tools/mesa; then
+            echo "=== meson-setup.log ==="; tail -n 80 /tmp/mi/meson-setup.log 2>/dev/null || true
+            echo "=== ninja.log ==="; tail -n 80 /tmp/mi/ninja.log 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Build LavenderMetal.bundle and test tools
         run: |

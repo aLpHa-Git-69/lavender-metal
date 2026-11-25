@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 mkdir -p out/LavenderMetal.bundle
 CC="xcrun -sdk iphoneos clang -arch arm64 -target arm64-apple-ios16.0 -O1 -Wall"
 
-(cd hk && ./build-ios.sh)
+(cd hk && bash ./build-ios.sh)
 $CC -std=gnu11 -c lava5.c -o out/lava5.o
 $CC -std=gnu11 -c lava5r.c -o out/lava5r.o
 $CXX $CXXF -Ihk/include -c lavcc.cpp -o out/lavcc.o
