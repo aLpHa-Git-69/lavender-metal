@@ -33,12 +33,26 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
 #define LAV_LOG "/var/root/lavmetal.log"
+#define LAV_LOG_FALLBACK "/var/tmp/lavmetal.log"
+
+static int gLavVerbose = -1;
+
+static int
+lavVerbose(void)
+{
+	if (gLavVerbose < 0) {
+		const char * e = getenv("LAVMETAL_VERBOSE");
+		gLavVerbose = (e != NULL && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+	}
+	return gLavVerbose;
+}
 
 static void
 lavlog(const char * fmt, ...)
@@ -51,12 +65,17 @@ lavlog(const char * fmt, ...)
 	vsnprintf(line, sizeof(line), fmt, ap);
 	va_end(ap);
 	f = fopen(LAV_LOG, "a");
+	if (f == NULL) {
+		f = fopen(LAV_LOG_FALLBACK, "a");
+	}
 	if (f != NULL) {
 		fprintf(f, "%ld LavenderMetal[%d]: %s\n", (long)time(NULL), (int)getpid(), line);
 		fclose(f);
 	}
 	NSLog(@"LavenderMetal: %s", line);
 }
+
+#define lavdbg(...) do { if (lavVerbose()) lavlog(__VA_ARGS__); } while (0)
 
 /* ------------------------------------------------------------------------------------------------------------------ */
 /* The service: LavenderGPU (kernel/LavenderGPU.cpp). Buffers, and streams of PM4 words submitted by reference.         */
@@ -1820,8 +1839,13 @@ runDispatch(struct op * op)
 		return NO;
 	}
 	ok = lavSubmit(w, n);
-	lavlog("dispatch of %s: %ux%ux%u groups of %ux%ux%u, %zu words, %s", ps->k.name, ld.groups[0], ld.groups[1], ld.groups[2],
-	    ld.local[0], ld.local[1], ld.local[2], n, ok ? "done" : "FAILED");
+	if (!ok) {
+		lavlog("dispatch of %s: %ux%ux%u groups of %ux%ux%u, %zu words, FAILED", ps->k.name, ld.groups[0], ld.groups[1], ld.groups[2],
+		    ld.local[0], ld.local[1], ld.local[2], n);
+	} else {
+		lavdbg("dispatch of %s: %ux%ux%u groups of %ux%ux%u, %zu words, done", ps->k.name, ld.groups[0], ld.groups[1], ld.groups[2],
+		    ld.local[0], ld.local[1], ld.local[2], n);
+	}
 	free(w);
 	return ok;
 }
@@ -2046,7 +2070,6 @@ registerComputeClasses(Class device)
 		ADD(gLibraryClass, "newFunctionWithName:", libNewFunction, "@@:@");
 		ADD(gLibraryClass, "newFunctionWithName:constantValues:error:", libNewFunctionConstants, "@@:@@^@");
 		ADD(gLibraryClass, "newFunctionWithDescriptor:error:", libNewFunctionDescriptor, "@@:@^@");
-		ADD(gFunctionClass, "newSpecializedFunctionWithDescriptor:destinationArchive:functionCache:error:", fnNewSpecialized, "@@:@@@^@");
 		objc_registerClassPair(gLibraryClass);
 		ADD(device, "newLibraryWithData:error:", deviceNewLibraryData, "@@:@^@");
 		ADD(device, "newLibraryWithURL:error:", deviceNewLibraryURL, "@@:@^@");
@@ -2065,6 +2088,7 @@ registerComputeClasses(Class device)
 		ADD(gFunctionClass, "functionType", fnType, "Q@:");
 		ADD(gFunctionClass, "label", fnLabel, "@@:");
 		ADD(gFunctionClass, "setLabel:", fnSetLabel, "v@:@");
+		ADD(gFunctionClass, "newSpecializedFunctionWithDescriptor:destinationArchive:functionCache:error:", fnNewSpecialized, "@@:@@@^@");
 		objc_registerClassPair(gFunctionClass);
 	}
 	if ((gPipelineClass = newClass("LavenderMetalComputePipeline", "_MTLComputePipelineState")) != Nil) {

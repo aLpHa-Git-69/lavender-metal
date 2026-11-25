@@ -340,10 +340,12 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	unsigned psize_loc = l->psize_loc;
 	const char * e;
 	unsigned i, j, nvtx = 0;
-	uint32_t color_fmt = r->rt_format == 1 ? RB5_R8G8B8A8_UNORM : RB5_R8G8B8A8_UNORM;
-	enum a3xx_color_swap swap = r->rt_format == 1 ? WZYX : WXYZ;
+	uint32_t color_fmt = RB5_R8G8B8A8_UNORM;
+	enum a3xx_color_swap swap = WXYZ;
 	int32_t vp_x, vp_y;
 	unsigned nrt = r->nrt ? r->nrt : 1;
+	(void)color_fmt;
+	(void)swap;
 
 	*why = NULL;
 	if (vs->nattr != r->nattr) {
@@ -430,14 +432,36 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 
 	/* emit_mrt: the colour targets of the pass, the others empty */
 	for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
+		uint32_t rt_fmt = 0;
+		uint32_t rt_srgb_rb = 0, rt_srgb_sp = 0;
+		enum a3xx_color_swap sw = WZYX;
+
 		pkt4(s, REG_A5XX_RB_MRT_BUF_INFO(i), 5);
 		if (i < nrt) {
 			uint64_t gpu = i == 0 ? r->rt_gpu : r->rt[i].gpu;
 			uint32_t pitch = i == 0 ? r->rt_pitch : r->rt[i].pitch;
-			enum a3xx_color_swap sw = (i == 0 ? r->rt_format : r->rt[i].format) == 1 ? WZYX : WXYZ;
+			uint32_t fmt = i == 0 ? r->rt_format : r->rt[i].format;
 
-			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(color_fmt) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
-			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(sw));
+			switch (fmt) {
+			case LAV5_FMT_RGBA8:
+				rt_fmt = RB5_R8G8B8A8_UNORM; sw = WZYX; break;
+			case LAV5_FMT_BGRA8_SRGB:
+				rt_fmt = RB5_R8G8B8A8_UNORM; sw = WXYZ;
+				rt_srgb_rb = A5XX_RB_MRT_BUF_INFO_COLOR_SRGB;
+				rt_srgb_sp = A5XX_SP_FS_MRT_REG_COLOR_SRGB; break;
+			case LAV5_FMT_RGBA8_SRGB:
+				rt_fmt = RB5_R8G8B8A8_UNORM; sw = WZYX;
+				rt_srgb_rb = A5XX_RB_MRT_BUF_INFO_COLOR_SRGB;
+				rt_srgb_sp = A5XX_SP_FS_MRT_REG_COLOR_SRGB; break;
+			case LAV5_FMT_A8:
+				rt_fmt = RB5_A8_UNORM; sw = WZYX; break;
+			case LAV5_FMT_R8:
+				rt_fmt = RB5_R8_UNORM; sw = WZYX; break;
+			default: /* LAV5_FMT_BGRA8 */
+				rt_fmt = RB5_R8G8B8A8_UNORM; sw = WXYZ; break;
+			}
+			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(rt_fmt) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
+			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(sw) | rt_srgb_rb);
 			out(s, A5XX_RB_MRT_PITCH(pitch));
 			out(s, A5XX_RB_MRT_ARRAY_PITCH(pitch * r->rt_height));
 			out(s, (uint32_t)gpu);
@@ -450,7 +474,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, 0);
 			out(s, 0);
 		}
-		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(i < nrt ? color_fmt : 0));
+		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(i < nrt ? rt_fmt : 0) | rt_srgb_sp);
 		zeros(s, REG_A5XX_RB_MRT_FLAG_BUFFER(i), 4);
 	}
 	/* emit_msaa: one sample */
@@ -779,14 +803,31 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
 			for (i = 0; i < nt; i++) {
 				const struct lav5_tex * t = &r->tex[i];
-				uint32_t sx = A5XX_TEX_X, sz = A5XX_TEX_Z;
+				uint32_t fmt = t->format ? (t->format - 1) : (t->bgra ? LAV5_FMT_BGRA8 : LAV5_FMT_RGBA8);
+				uint32_t tfmt = TFMT5_8_8_8_8_UNORM;
+				uint32_t sx = A5XX_TEX_X, sy = A5XX_TEX_Y, sz = A5XX_TEX_Z, sw = A5XX_TEX_W;
+				uint32_t srgb = 0;
 
-				if (t->valid && t->bgra) {
-					sx = A5XX_TEX_Z;
-					sz = A5XX_TEX_X;
+				if (t->valid) {
+					switch (fmt) {
+					case LAV5_FMT_BGRA8:
+						sx = A5XX_TEX_Z; sz = A5XX_TEX_X; break;
+					case LAV5_FMT_BGRA8_SRGB:
+						sx = A5XX_TEX_Z; sz = A5XX_TEX_X; srgb = A5XX_TEX_CONST_0_SRGB; break;
+					case LAV5_FMT_RGBA8_SRGB:
+						srgb = A5XX_TEX_CONST_0_SRGB; break;
+					case LAV5_FMT_A8:
+						tfmt = TFMT5_A8_UNORM;
+						sx = A5XX_TEX_ZERO; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_X; break;
+					case LAV5_FMT_R8:
+						tfmt = TFMT5_8_UNORM;
+						sx = A5XX_TEX_X; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					default:
+						break;
+					}
 				}
-				out(s, A5XX_TEX_CONST_0_FMT(TFMT5_8_8_8_8_UNORM) | A5XX_TEX_CONST_0_TILE_MODE(TILE5_LINEAR) | A5XX_TEX_CONST_0_SWIZ_X(sx) |
-				    A5XX_TEX_CONST_0_SWIZ_Y(A5XX_TEX_Y) | A5XX_TEX_CONST_0_SWIZ_Z(sz) | A5XX_TEX_CONST_0_SWIZ_W(A5XX_TEX_W));
+				out(s, A5XX_TEX_CONST_0_FMT(tfmt) | A5XX_TEX_CONST_0_TILE_MODE(TILE5_LINEAR) | A5XX_TEX_CONST_0_SWIZ_X(sx) |
+				    A5XX_TEX_CONST_0_SWIZ_Y(sy) | A5XX_TEX_CONST_0_SWIZ_Z(sz) | A5XX_TEX_CONST_0_SWIZ_W(sw) | srgb);
 				out(s, A5XX_TEX_CONST_1_WIDTH(t->width) | A5XX_TEX_CONST_1_HEIGHT(t->height));
 				out(s, A5XX_TEX_CONST_2_PITCHALIGN(0) | A5XX_TEX_CONST_2_PITCH(t->pitch) | A5XX_TEX_CONST_2_TYPE(A5XX_TEX_2D));
 				out(s, A5XX_TEX_CONST_3_ARRAY_PITCH((t->pitch * t->height + 4095) & ~4095u));

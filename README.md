@@ -1,7 +1,7 @@
 # lavender-metal
 
 GPU bring-up for the **Redmi Note 7 (lavender, Snapdragon 660, Adreno 512)** running iOS 16 through the
-[lavender-ios16](https://github.com/pcorezzola/lavender-ios16) port: an Adreno 512 kernel driver for XNU and a
+[lavender-ios16](https://github.com/aLpHa-Git-69/lavender-ios16) port: an Adreno 512 kernel driver for XNU and a
 Metal-compatible layer on top of it, so that iOS stops drawing everything on the CPU.
 
 ## Why
@@ -86,7 +86,7 @@ verified (on the device unless noted).
 
 ## Related repositories
 
-- [pcorezzola/lavender-ios16](https://github.com/pcorezzola/lavender-ios16): the iOS 16 port for the Redmi Note 7 that 
+- [aLpHa-Git-69/lavender-ios16](https://github.com/aLpHa-Git-69/lavender-ios16): the iOS 16 port for the Redmi Note 7 that 
   this GPU work serves. The kernel driver (`kernel/lavender_gpu.c` here) is built into that port as `drivers/gpu/lavender_gpu.c` 
   and the patches `xnu/patches/0300`-`0399`, and is switched on with the `lavgpu=N` boot-arg. Boot images and CI live there.
 - this repository: research, host-side tests and the plan; no firmware or Qualcomm blobs are committed.

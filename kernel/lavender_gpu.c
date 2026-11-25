@@ -296,6 +296,82 @@ ldo_bhs_mode(void)
 	wr(gpucc, CC_LDO_PWRSWITCH_CTRL, ctl);
 }
 
+/*
+ * 0323 (upstream 0355): GPU clock (boot-arg lavgpuclk=160|266). ABL leaves the GFX3D RCG on XO (cfg 0, 19.2 MHz)
+ * and the ladder never changed it, so the CP ran 14x slower than Android's 266 MHz and big draws from backboardd
+ * (a 1080x2340 target, a 26k-word fragment shader) outlasted the service's waits.
+ * Values read in TWRP (kgsl devfreq + debugfs clk print_regs, speed bin 0):
+ *   160 MHz: GPU PLL1 (0x40) L 0x21 ALPHA 0x55_55555600 USER_CTL 0x01200101, RCG cfg 0x303  (CPR corner 1, 0.585 V)
+ *   266 MHz: GPU PLL0 (0x00) L 0x1b ALPHA 0xb5_55555600 USER_CTL 0x01200001, RCG cfg 0x103  (CPR corner 2, 0.645 V)
+ */
+#define PLL_MODE        0x00u
+#define PLL_L           0x04u
+#define PLL_ALPHA       0x08u
+#define PLL_ALPHA_U     0x0cu
+#define PLL_USER_CTL    0x10u
+#define PLL_USER_CTL_U  0x14u
+#define PLL_CONFIG_CTL  0x18u
+#define PLL_TEST_CTL    0x20u
+#define PLL_TEST_CTL_U  0x24u
+
+static void
+lav_gpu_clock(void)
+{
+	uint32_t mhz = 0, base, l, alpha, alpha_u, user, cfg, v;
+	int i;
+
+	if (!PE_parse_boot_argn("lavgpuclk", &mhz, sizeof(mhz)) || mhz == 0) {
+		return;
+	}
+	if (mhz == 160) {
+		base = CC_GPU_PLL1_MODE; l = 0x21; alpha = 0x55555600u; alpha_u = 0x55; user = 0x01200101u; cfg = 0x303;
+	} else if (mhz == 266) {
+		base = CC_GPU_PLL0_MODE; l = 0x1b; alpha = 0x55555600u; alpha_u = 0xb5; user = 0x01200001u; cfg = 0x103;
+	} else {
+		printf("LAVGPU: lavgpuclk=%u is not 160 or 266\n", mhz);
+		return;
+	}
+	printf("LAVGPU: clock: gfx3d rcg cfg %08x, PLL mode %08x -> %u MHz\n", rd(gpucc, CC_GFX3D_RCG_CFG),
+	    rd(gpucc, base + PLL_MODE), mhz);
+	wr(gpucc, base + PLL_MODE, 0);
+	wr(gpucc, base + PLL_L, l);
+	wr(gpucc, base + PLL_ALPHA, alpha);
+	wr(gpucc, base + PLL_ALPHA_U, alpha_u);
+	wr(gpucc, base + PLL_USER_CTL, user);
+	wr(gpucc, base + PLL_USER_CTL_U, 4);
+	wr(gpucc, base + PLL_CONFIG_CTL, 0x4001055bu);
+	wr(gpucc, base + PLL_TEST_CTL, 0);
+	wr(gpucc, base + PLL_TEST_CTL_U, 0);
+	wr(gpucc, base + PLL_MODE, 2);			/* BYPASSNL */
+	lav_wait(1);
+	wr(gpucc, base + PLL_MODE, 6);			/* RESET_N */
+	for (i = 0; i < 100; i++) {
+		v = rd(gpucc, base + PLL_MODE);
+		if (v & 0x80000000u) {
+			break;
+		}
+		lav_wait(1);
+	}
+	printf("LAVGPU: clock: PLL mode %08x after %d ms (%s)\n", rd(gpucc, base + PLL_MODE), i,
+	    (i < 100) ? "locked" : "NOT locked");
+	if (i >= 100) {
+		wr(gpucc, base + PLL_MODE, 0);
+		return;
+	}
+	wr(gpucc, base + PLL_MODE, 7);			/* OUTCTRL */
+	lav_wait(1);
+	wr(gpucc, CC_GFX3D_RCG_CFG, cfg);
+	wr(gpucc, CC_GFX3D_RCG_CMD, rd(gpucc, CC_GFX3D_RCG_CMD) | 1u);
+	for (i = 0; i < 100; i++) {
+		if (!(rd(gpucc, CC_GFX3D_RCG_CMD) & 1u)) {
+			break;
+		}
+		lav_wait(1);
+	}
+	printf("LAVGPU: clock: gfx3d rcg cmd %08x cfg %08x (%s)\n", rd(gpucc, CC_GFX3D_RCG_CMD),
+	    rd(gpucc, CC_GFX3D_RCG_CFG), (i < 100) ? "switched" : "update TIMED OUT");
+}
+
 static void
 step4_gx(void)
 {
@@ -376,6 +452,7 @@ step4_gx(void)
 		printf("LAVGPU: %s clk %08x (%s)\n", i ? "rbbmtimer" : "gfx3d",
 		    v, (v & CBCR_OFF) ? "STILL OFF" : "on");
 	}
+	lav_gpu_clock();
 	lav_announce("step 4: READ the GPU block at 0x05000000");
 	dump_gpu();
 	gx_on = 1;
@@ -486,7 +563,8 @@ lav_alloc(vm_size_t size, vm_offset_t mask, vm_offset_t *va, uint64_t *pa)
 	ppnum_t pn;
 
 	*va = 0;
-	if (kmem_alloc_contig(kernel_map, va, size, mask, 0, 0,
+	if (kmem_alloc_contig(kernel_map, va, size, mask,
+	    (ppnum_t)((0x100000000ull >> PAGE_SHIFT) - 1), 0,
 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) !=
 	    KERN_SUCCESS) {
 		return ENOMEM;
@@ -924,6 +1002,14 @@ ring_pkt7(uint32_t opcode, uint32_t cnt)
 	    ((opcode & 0x7f) << 16) | (pm4_parity(opcode) << 23));
 }
 
+/*
+ * 0323 (upstream 0356 + fast service poll): bring-up ladder steps wait up to 3 s in 10 ms polls;
+ * service streams spin up to 2 ms (avoiding a 10 ms scheduler penalty per draw call) then sleep
+ * 1 ms at a time up to 15 s (big full-screen QuartzCore shaders at 160 MHz).
+ */
+static int ring_svc_mode;
+static uint32_t lav_svc_verbose;
+
 /* Publish the packets and wait for the CP read pointer to catch up. */
 static int
 ring_submit(const char *what)
@@ -932,14 +1018,42 @@ ring_submit(const char *what)
 
 	flush_dcache64((addr64_t)ring_pa, RING_BYTES, TRUE);
 	wr(gpu, A5_CP_RB_WPTR, ring_wptr);
-	for (int i = 0; i < 300; i++) {
-		rptr = rd(gpu, A5_CP_RB_RPTR);
-		if (rptr == ring_wptr) {
-			printf("LAVGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
-			    what, rptr, ring_wptr, i * 10);
-			return 0;
+	if (ring_svc_mode) {
+		uint64_t spin_until;
+
+		clock_interval_to_deadline(2, NSEC_PER_MSEC, &spin_until);
+		while (mach_absolute_time() < spin_until) {
+			rptr = rd(gpu, A5_CP_RB_RPTR);
+			if (rptr == ring_wptr) {
+				if (lav_svc_verbose) {
+					printf("LAVGPU: %s consumed: RPTR %u WPTR %u (<2 ms)\n",
+					    what, rptr, ring_wptr);
+				}
+				return 0;
+			}
+			__asm__ volatile("yield" ::: "memory");
 		}
-		lav_wait(10);
+		for (int i = 0; i < 15000; i++) {
+			rptr = rd(gpu, A5_CP_RB_RPTR);
+			if (rptr == ring_wptr) {
+				if (lav_svc_verbose || i >= 500) {
+					printf("LAVGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
+					    what, rptr, ring_wptr, i + 2);
+				}
+				return 0;
+			}
+			lav_wait(1);
+		}
+	} else {
+		for (int i = 0; i < 300; i++) {
+			rptr = rd(gpu, A5_CP_RB_RPTR);
+			if (rptr == ring_wptr) {
+				printf("LAVGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
+				    what, rptr, ring_wptr, i * 10);
+				return 0;
+			}
+			lav_wait(10);
+		}
 	}
 	printf("LAVGPU: %s NOT consumed: RPTR %u WPTR %u, RBBM_STATUS %08x INT_0 "
 	    "%08x AHB_ERR %08x\n", what, rptr, ring_wptr, rd(gpu, A5_RBBM_STATUS),
@@ -2640,6 +2754,7 @@ lavender_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
 		return 0;
 	}
 	seq = ++lav_svc_seq;
+	ring_svc_mode = 1;
 	for (uint32_t i = 0; i < count; i++) {
 		ring_put(dw[i]);
 	}
@@ -2662,7 +2777,7 @@ lavender_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
 		*status = EIO;
 		return 0;
 	}
-	for (int i = 0; i < 2000; i++) {
+	for (int i = 0; i < 10000; i++) {
 		flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
 		if (*f == seq) {
 			return seq;
@@ -2683,6 +2798,7 @@ lav_service_start(int selftest)
 	}
 	*(volatile uint32_t *)(rptr_va + 0xe00) = 0;
 	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+	(void)PE_parse_boot_argn("lavgpu_verbose", &lav_svc_verbose, sizeof(lav_svc_verbose));
 	lav_svc_ready = 1;
 	LavenderGPUStart();
 	printf("LAVGPU: service: started\n");
@@ -2838,6 +2954,23 @@ int lavender_gpu_probe(void);
 int
 lavender_gpu_probe(void)
 {
+	return 0;
+}
+
+int lavender_gpu_service_ready(void);
+int
+lavender_gpu_service_ready(void)
+{
+	return 0;
+}
+
+uint32_t lavender_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status);
+uint32_t
+lavender_gpu_service_submit(__unused const uint32_t *dw, __unused uint32_t count, int *status)
+{
+	if (status != NULL) {
+		*status = ENXIO;
+	}
 	return 0;
 }
 

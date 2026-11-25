@@ -27,13 +27,33 @@ msgAt(id o, const char * sel, uint64_t i)
 	return o != nil ? ((id (*)(id, SEL, uint64_t))objc_msgSend)(o, sel_registerName(sel), i) : nil;
 }
 
-#define PF_RGBA8 70
-#define PF_BGRA8 80
+#define PF_A8         1
+#define PF_R8         10
+#define PF_RGBA8      70
+#define PF_RGBA8_SRGB 71
+#define PF_BGRA8      80
+#define PF_BGRA8_SRGB 81
+
+static uint32_t
+lavFmtFromMetal(uint32_t mtlFmt, uint32_t * bpp)
+{
+	switch (mtlFmt) {
+	case PF_A8:         if (bpp) *bpp = 1; return LAV5_FMT_A8;
+	case PF_R8:         if (bpp) *bpp = 1; return LAV5_FMT_R8;
+	case PF_RGBA8:      if (bpp) *bpp = 4; return LAV5_FMT_RGBA8;
+	case PF_RGBA8_SRGB: if (bpp) *bpp = 4; return LAV5_FMT_RGBA8_SRGB;
+	case PF_BGRA8:      if (bpp) *bpp = 4; return LAV5_FMT_BGRA8;
+	case PF_BGRA8_SRGB: if (bpp) *bpp = 4; return LAV5_FMT_BGRA8_SRGB;
+	default:            if (bpp) *bpp = 0; return 0xffu;
+	}
+}
 
 struct texstate {
-	IOSurfaceRef surface;                   /* retained: the texture is a CAMetalLayer drawable; present copies into it */
+	IOSurfaceRef surface;                   /* retained: the texture is backed by an IOSurface; sync on read/present */
 	struct lbuf b;
 	uint32_t width, height, format, pitch;
+	uint32_t mips, bpp, lastSeed;
+	BOOL seedValid;
 	uint64_t usage, storage;
 	id label;
 };
@@ -47,19 +67,20 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	struct texstate * st;
 	id o;
 	size_t pitch, len;
+	uint32_t bpp = 0;
 	BOOL ok;
 
 	if (!lavOpen() || w == 0 || h == 0 || w > 4096 || h > 4096) {
 		lavlog("newTexture %llux%llu refused", (unsigned long long)w, (unsigned long long)h);
 		return nil;
 	}
-	if ((fmt != PF_RGBA8 && fmt != PF_BGRA8) || type != 2 || depth > 1 || samples > 1 || layers > 1) {
-		lavlog("newTexture: pixel format %llu, type %llu, %llu mips, %llu samples, %llu layers: not served (2D RGBA8/BGRA8 only)",
+	if (lavFmtFromMetal((uint32_t)fmt, &bpp) == 0xffu || type != 2 || depth > 1 || samples > 1 || layers > 1) {
+		lavlog("newTexture: pixel format %llu, type %llu, %llu mips, %llu samples, %llu layers: not served (2D A8/R8/RGBA8/BGRA8/sRGB only)",
 		    (unsigned long long)fmt, (unsigned long long)type, (unsigned long long)mips, (unsigned long long)samples,
 		    (unsigned long long)layers);
 		return nil;
 	}
-	pitch = ((size_t)w * 4 + 63) & ~(size_t)63;
+	pitch = ((size_t)w * bpp + 63) & ~(size_t)63;
 	len = pitch * (size_t)h;
 	if (mips > 1) {
 		/* room for the whole chain (under 4/3 of the base level); only level 0 is drawn to and sampled for now */
@@ -78,6 +99,7 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	ok = lavBufNew((len + 4095) & ~(size_t)4095, &st->b);
 	pthread_mutex_unlock(&gGPULock);
 	if (!ok) {
+		[o release];
 		return nil;
 	}
 	memset(st->b.cpu, 0, st->b.len);
@@ -85,9 +107,11 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	st->height = (uint32_t)h;
 	st->format = (uint32_t)fmt;
 	st->pitch = (uint32_t)pitch;
+	st->mips = mips > 0 ? (uint32_t)mips : 1u;
+	st->bpp = bpp;
 	st->usage = msgU(desc, "usage");
 	st->storage = msgU(desc, "storageMode");
-	lavlog("texture %llux%llu format %llu, pitch %zu, at GPU %#llx", (unsigned long long)w, (unsigned long long)h,
+	lavdbg("texture %llux%llu format %llu, pitch %zu, at GPU %#llx", (unsigned long long)w, (unsigned long long)h,
 	    (unsigned long long)fmt, pitch, (unsigned long long)st->b.gpu);
 	return o;
 }
@@ -96,7 +120,7 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 static void
 surfaceCopy(struct texstate * t, BOOL toSurface)
 {
-	size_t sp, rows = t->height, row = (size_t)t->width * 4;
+	size_t sp, rows = t->height, row = (size_t)t->width * t->bpp;
 	uint8_t * base;
 
 	if (IOSurfaceLock(t->surface, toSurface ? 0 : kIOSurfaceLockReadOnly, NULL) != 0) {
@@ -108,6 +132,9 @@ surfaceCopy(struct texstate * t, BOOL toSurface)
 	if (IOSurfaceGetHeight(t->surface) < rows) {
 		rows = IOSurfaceGetHeight(t->surface);
 	}
+	if (sp < row) {
+		row = sp;
+	}
 	for (size_t y = 0; y < rows; y++) {
 		if (toSurface) {
 			memcpy(base + y * sp, (uint8_t *)t->b.cpu + y * t->pitch, row);
@@ -116,15 +143,61 @@ surfaceCopy(struct texstate * t, BOOL toSurface)
 		}
 	}
 	IOSurfaceUnlock(t->surface, toSurface ? 0 : kIOSurfaceLockReadOnly, NULL);
+	t->lastSeed = IOSurfaceGetSeed(t->surface);
+	t->seedValid = YES;
+}
+
+/* Pull IOSurface bytes into GPU memory when the surface has been modified externally (or never pulled yet). */
+static void
+surfacePullIfDirty(struct texstate * t)
+{
+	if (t->surface == NULL) {
+		return;
+	}
+	if (!t->seedValid || IOSurfaceGetSeed(t->surface) != t->lastSeed) {
+		surfaceCopy(t, NO);
+	}
 }
 
 static void
 cbSyncSurfaces(struct cbstate * st)
 {
-	for (size_t i = 0; i < st->nops; i++) {
-		id tex = st->ops[i].kind == OP_DRAW ? st->ops[i].draw->target : st->ops[i].kind == OP_CLEAR ? st->ops[i].dst : nil;
+	id synced[32];
+	size_t nsynced = 0;
 
-		if (tex != nil && STATE(tex, struct texstate)->surface != NULL) {
+	for (size_t i = 0; i < st->nops; i++) {
+		id cand[8] = { nil };
+		size_t ncand = 0;
+
+		if (st->ops[i].kind == OP_DRAW && st->ops[i].draw != NULL) {
+			cand[ncand++] = st->ops[i].draw->target;
+			for (int j = 1; j < 8; j++) {
+				if (st->ops[i].draw->xtarget[j] != nil) {
+					cand[ncand++] = st->ops[i].draw->xtarget[j];
+				}
+			}
+		} else if (st->ops[i].kind == OP_CLEAR) {
+			cand[ncand++] = st->ops[i].dst;
+		}
+		for (size_t c = 0; c < ncand; c++) {
+			id tex = cand[c];
+			BOOL seen = NO;
+
+			if (tex == nil || STATE(tex, struct texstate)->surface == NULL) {
+				continue;
+			}
+			for (size_t s = 0; s < nsynced; s++) {
+				if (synced[s] == tex) {
+					seen = YES;
+					break;
+				}
+			}
+			if (seen) {
+				continue;
+			}
+			if (nsynced < 32) {
+				synced[nsynced++] = tex;
+			}
 			surfaceCopy(STATE(tex, struct texstate), YES);
 		}
 	}
@@ -135,10 +208,15 @@ deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_
 {
 	id o;
 	struct texstate * st;
+	uint32_t sfmt;
 
-	if (surface == NULL || plane != 0 || IOSurfaceGetPixelFormat(surface) != 'BGRA') {
-		lavlog("newTexture from an IOSurface: plane %llu, pixel format %#x: only plane 0 of BGRA is served",
-		    (unsigned long long)plane, surface != NULL ? IOSurfaceGetPixelFormat(surface) : 0);
+	if (surface == NULL || plane != 0) {
+		lavlog("newTexture from an IOSurface: plane %llu refused", (unsigned long long)plane);
+		return nil;
+	}
+	sfmt = IOSurfaceGetPixelFormat(surface);
+	if (sfmt != 'BGRA' && sfmt != 'RGBA' && sfmt != 'L008') {
+		lavlog("newTexture from an IOSurface: pixel format %#x: only BGRA/RGBA/L008 served", sfmt);
 		return nil;
 	}
 	o = deviceNewTexture(self, cmd, desc);
@@ -146,15 +224,16 @@ deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_
 		return nil;
 	}
 	st = STATE(o, struct texstate);
-	if (st->format != PF_BGRA8 || IOSurfaceGetWidth(surface) < st->width || IOSurfaceGetHeight(surface) < st->height) {
+	if (IOSurfaceGetWidth(surface) < st->width || IOSurfaceGetHeight(surface) < st->height) {
 		lavlog("newTexture from an IOSurface: the surface (%zux%zu) does not hold the texture (%ux%u)", IOSurfaceGetWidth(surface),
 		    IOSurfaceGetHeight(surface), st->width, st->height);
 		[o release];
 		return nil;
 	}
 	st->surface = (IOSurfaceRef)CFRetain(surface);
-	lavlog("texture over an IOSurface %zux%zu, row %zu bytes", IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface),
-	    IOSurfaceGetBytesPerRow(surface));
+	st->seedValid = NO;
+	lavdbg("texture over an IOSurface %zux%zu fmt %#x, row %zu bytes", IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface),
+	    sfmt, IOSurfaceGetBytesPerRow(surface));
 	return o;
 }
 
@@ -194,7 +273,9 @@ texDealloc(id self, __unused SEL _cmd)
 static IOSurfaceRef texIOSurface(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->surface; }
 static uint64_t texWidth(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->width; }
 static uint64_t texHeight(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->height; }
+static uint64_t texZero(__unused id self, __unused SEL _cmd) { return 0; }
 static uint64_t texOne(__unused id self, __unused SEL _cmd) { return 1; }
+static uint64_t texMips(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->mips; }
 static uint64_t texType(__unused id self, __unused SEL _cmd) { return 2; }
 static uint64_t texFormat(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->format; }
 static uint64_t texUsage(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->usage; }
@@ -226,8 +307,10 @@ texGetBytes(id self, __unused SEL _cmd, void * dst, uint64_t pitch, LavRegion r,
 		lavlog("getBytes: region outside the texture");
 		return;
 	}
+	surfacePullIfDirty(st);
 	for (uint64_t y = 0; y < r.size.height; y++) {
-		memcpy((uint8_t *)dst + y * pitch, (uint8_t *)st->b.cpu + (r.origin.y + y) * st->pitch + r.origin.x * 4, r.size.width * 4);
+		memcpy((uint8_t *)dst + y * pitch, (uint8_t *)st->b.cpu + (r.origin.y + y) * st->pitch + r.origin.x * st->bpp,
+		    r.size.width * st->bpp);
 	}
 }
 
@@ -247,7 +330,8 @@ texReplace(id self, __unused SEL _cmd, LavRegion r, uint64_t level, const void *
 		return;
 	}
 	for (uint64_t y = 0; y < r.size.height; y++) {
-		memcpy((uint8_t *)st->b.cpu + (r.origin.y + y) * st->pitch + r.origin.x * 4, (const uint8_t *)src + y * pitch, r.size.width * 4);
+		memcpy((uint8_t *)st->b.cpu + (r.origin.y + y) * st->pitch + r.origin.x * st->bpp, (const uint8_t *)src + y * pitch,
+		    r.size.width * st->bpp);
 	}
 }
 
@@ -586,7 +670,7 @@ rpDealloc(id self, __unused SEL _cmd)
 	struct rpipe * st = STATE(self, struct rpipe);
 	struct objc_super sup = { self, class_getSuperclass(gRenderPipeClass) };
 
-	lavlog("render pipeline freed (code handles %u, %u)", st->vcode.handle, st->fcode.handle);
+	lavdbg("render pipeline freed (code handles %u, %u)", st->vcode.handle, st->fcode.handle);
 	pthread_mutex_lock(&gGPULock);
 	if (st->vcode.handle != 0) {
 		lavBufFree(&st->vcode);
@@ -695,7 +779,7 @@ cbRenderEncoder(id self, __unused SEL _cmd, id passdesc)
 	re->scissor[3] = ts->height;
 	re->front_cw = 1;
 	if (msgU(att, "loadAction") == 1 && ts->surface != NULL) {
-		surfaceCopy(ts, NO);
+		surfacePullIfDirty(ts);
 	}
 	if (msgU(att, "loadAction") == 2) {
 		struct op * op = cbAddOp(STATE(self, struct cbstate));
@@ -1107,13 +1191,20 @@ runClear(struct op * op)
 {
 	struct texstate * t = STATE(op->dst, struct texstate);
 	uint32_t r = clamp8(op->clear[0]), g = clamp8(op->clear[1]), b = clamp8(op->clear[2]), a = clamp8(op->clear[3]);
-	uint32_t px = t->format == PF_BGRA8 ? (b | g << 8 | r << 16 | a << 24) : (r | g << 8 | b << 16 | a << 24);
 
-	for (uint32_t y = 0; y < t->height; y++) {
-		uint32_t * row = (uint32_t *)((uint8_t *)t->b.cpu + (size_t)y * t->pitch);
+	if (t->bpp == 1) {
+		uint8_t v = (uint8_t)(t->format == PF_A8 ? a : r);
 
-		for (uint32_t x = 0; x < t->width; x++) {
-			row[x] = px;
+		for (uint32_t y = 0; y < t->height; y++) {
+			memset((uint8_t *)t->b.cpu + (size_t)y * t->pitch, v, t->width);
+		}
+	} else {
+		uint32_t px = (t->format == PF_BGRA8 || t->format == PF_BGRA8_SRGB) ?
+		    (b | g << 8 | r << 16 | a << 24) : (r | g << 8 | b << 16 | a << 24);
+		size_t rowBytes = (size_t)t->width * 4;
+
+		for (uint32_t y = 0; y < t->height; y++) {
+			memset_pattern4((uint8_t *)t->b.cpu + (size_t)y * t->pitch, &px, rowBytes);
 		}
 	}
 	return YES;
@@ -1195,6 +1286,9 @@ runDraw(struct op * op)
 				free(r);
 				return NO;
 			}
+			if (gPvt[i].handle != 0) {
+				lavBufFree(&gPvt[i]);
+			}
 			gPvt[i] = nb;
 		}
 		if (i == 0) {
@@ -1208,7 +1302,7 @@ runDraw(struct op * op)
 	r->rt_width = t->width;
 	r->rt_height = t->height;
 	r->rt_pitch = t->pitch;
-	r->rt_format = t->format == PF_BGRA8 ? 0 : 1;
+	r->rt_format = lavFmtFromMetal(t->format, NULL);
 	r->nattr = rp->nattr;
 	memcpy(r->attr, rp->attr, sizeof(r->attr));
 	if (!bindStage(r->vs_buf, r->vbuf, d->vbuf, d->voff, d->vbytes, d->vblen, rp->stride, &boff, name) ||
@@ -1244,7 +1338,7 @@ runDraw(struct op * op)
 		if (d->xtarget[i] != nil) {
 			struct texstate * xt = STATE(d->xtarget[i], struct texstate);
 
-			r->rt[i] = (struct lav5_rt){ xt->b.gpu, xt->pitch, xt->format == PF_BGRA8 ? 0u : 1u, 1 };
+			r->rt[i] = (struct lav5_rt){ xt->b.gpu, xt->pitch, lavFmtFromMetal(xt->format, NULL), 1 };
 			r->nrt = i + 1;
 		}
 	}
@@ -1253,8 +1347,11 @@ runDraw(struct op * op)
 	for (int i = 0; i < 16; i++) {
 		if (d->ftex[i] != nil) {
 			struct texstate * ts = STATE(d->ftex[i], struct texstate);
+			uint32_t tf = lavFmtFromMetal(ts->format, NULL);
 
-			r->tex[i] = (struct lav5_tex){ ts->b.gpu, ts->width, ts->height, ts->pitch, ts->format == PF_BGRA8, 1 };
+			surfacePullIfDirty(ts);
+			r->tex[i] = (struct lav5_tex){ ts->b.gpu, ts->width, ts->height, ts->pitch,
+			    (ts->format == PF_BGRA8 || ts->format == PF_BGRA8_SRGB) ? 1u : 0u, 1u, tf + 1u };
 		}
 		if (d->fsamp[i] != nil) {
 			r->samp[i] = *STATE(d->fsamp[i], struct lav5_samp);
@@ -1271,7 +1368,11 @@ runDraw(struct op * op)
 		return NO;
 	}
 	ok = lavSubmit(w, n);
-	lavlog("draw: %u vertices x %u instances, prim %u, %zu words, %s", d->count, d->instances, d->prim, n, ok ? "done" : "FAILED");
+	if (!ok) {
+		lavlog("draw: %u vertices x %u instances, prim %u, %zu words, FAILED", d->count, d->instances, d->prim, n);
+	} else {
+		lavdbg("draw: %u vertices x %u instances, prim %u, %zu words, done", d->count, d->instances, d->prim, n);
+	}
 	free(w);
 	free(r);
 	return ok;

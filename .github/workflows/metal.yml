@@ -1,0 +1,78 @@
+name: lavender-metal
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "userland/**"
+      - "tools/mesa-ios/**"
+      - ".github/workflows/metal.yml"
+
+concurrency:
+  group: metal-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAKIOS_REPO: https://github.com/oosexgang/hakios-xnu-kernel.git
+  HAKIOS_SHA: 62e09f850f1f713192228cb9031da256033ede93
+
+jobs:
+  build:
+    name: LavenderMetal iOS arm64 bundle
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host A5xx tests
+        run: make -C userland test
+
+      - name: Fetch hakios Mesa AIR patches (pinned)
+        run: |
+          git init -q refs/hakios
+          git -C refs/hakios remote add origin "$HAKIOS_REPO"
+          git -C refs/hakios config core.sparseCheckout true
+          printf 'components/metal/plugin/tools/mesa/\n' > refs/hakios/.git/info/sparse-checkout
+          git -C refs/hakios fetch -q --depth 1 origin "$HAKIOS_SHA"
+          git -C refs/hakios checkout -q FETCH_HEAD
+          ls -la refs/hakios/components/metal/plugin/tools/mesa
+
+      - name: Restore Mesa 25.0.7 iOS archives cache
+        id: mesa-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/mi/archives.txt
+            /tmp/mi/build/build.ninja
+            /tmp/mi/build/src
+            /tmp/mi/mesa-25.0.7/src
+            /tmp/mi/mesa-25.0.7/include
+            /tmp/mi/mesa-25.0.7/.hakios-patches
+          key: mesa-ios-25.0.7-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh') }}
+
+      - name: Build Mesa 25.0.7 + AIR front end for iOS arm64
+        if: steps.mesa-cache.outputs.cache-hit != 'true'
+        run: |
+          sw_vers
+          xcodebuild -version
+          B=/tmp/mi bash tools/mesa-ios/build-mac.sh refs/hakios/components/metal/plugin/tools/mesa
+
+      - name: Build LavenderMetal.bundle and test tools
+        run: |
+          B=/tmp/mi bash userland/build-lavmetal.sh
+          SIZE=$(stat -f%z userland/out/LavenderMetal.bundle/LavenderMetal)
+          echo "LavenderMetal binary size: $SIZE bytes (loader limit ~8270000)"
+          test "$SIZE" -lt 8260000 || { echo "::error::LavenderMetal binary exceeds loader size limit ($SIZE)"; exit 1; }
+          mkdir -p dist
+          cp -R userland/out/LavenderMetal.bundle dist/
+          cp userland/out/lavmetal_switch userland/out/lavmetal_test userland/out/lavca_test userland/out/lavqc_test dist/
+          cp userland/kernels/lavk.metallib dist/
+          (cd dist && tar czf lavender-metal-ios.tar.gz LavenderMetal.bundle lavmetal_switch lavmetal_test lavca_test lavqc_test lavk.metallib && shasum -a 256 lavender-metal-ios.tar.gz > SHA256SUMS)
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lavender-metal-ios
+          path: dist/
+          retention-days: 14

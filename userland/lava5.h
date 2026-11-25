@@ -111,12 +111,23 @@ struct lav5_vbuf {
 	uint32_t stride;
 };
 
-/* a texture bound for the fragment stage: linear 2D, 8888 */
+/* pixel formats shared by textures and colour targets (lava5r.c) */
+enum lav5_fmt {
+	LAV5_FMT_BGRA8      = 0,
+	LAV5_FMT_RGBA8      = 1,
+	LAV5_FMT_BGRA8_SRGB = 2,
+	LAV5_FMT_RGBA8_SRGB = 3,
+	LAV5_FMT_A8         = 4,
+	LAV5_FMT_R8         = 5,
+};
+
+/* a texture bound for the fragment stage: linear 2D */
 struct lav5_tex {
 	uint64_t gpu;
 	uint32_t width, height, pitch;
-	uint32_t bgra;                              /* 1: B,G,R,A in memory (bgra8Unorm), 0: R,G,B,A */
+	uint32_t bgra;                              /* legacy 1=BGRA8 / 0=RGBA8 when format==0; or enum lav5_fmt */
 	uint32_t valid;
+	uint32_t format;                            /* enum lav5_fmt + 1 when set (0 falls back to bgra flag) */
 };
 
 /* a sampler: filters 0 nearest / 1 linear; wrap 0 repeat / 1 clamp to edge / 2 mirror repeat */

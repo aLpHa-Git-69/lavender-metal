@@ -16,11 +16,11 @@ registerRenderClasses(Class device)
 		ADD(gTextureClass, "label", texLabel, "@@:");
 		ADD(gTextureClass, "setLabel:", texSetLabel, "v@:@");
 		ADD(gTextureClass, "iosurface", texIOSurface, "^{__IOSurface=}@:");
-		ADD(gTextureClass, "iosurfacePlane", texOne, "Q@:");
+		ADD(gTextureClass, "iosurfacePlane", texZero, "Q@:");
 		ADD(gTextureClass, "width", texWidth, "Q@:");
 		ADD(gTextureClass, "height", texHeight, "Q@:");
 		ADD(gTextureClass, "depth", texOne, "Q@:");
-		ADD(gTextureClass, "mipmapLevelCount", texOne, "Q@:");
+		ADD(gTextureClass, "mipmapLevelCount", texMips, "Q@:");
 		ADD(gTextureClass, "sampleCount", texOne, "Q@:");
 		ADD(gTextureClass, "arrayLength", texOne, "Q@:");
 		ADD(gTextureClass, "textureType", texType, "Q@:");
