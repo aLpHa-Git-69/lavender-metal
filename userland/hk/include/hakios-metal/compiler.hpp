@@ -143,8 +143,9 @@ std::unique_ptr<CompiledStage> compileStage(const void* bitcode, size_t size, st
 // end's refusal).
 bool knownBufferControlBytes(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t binding, size_t length,
                              std::vector<uint8_t>* mask, std::string* why);
-bool firstSmallConstantBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
-                              uint32_t* outBinding, uint32_t* outSize, std::string* why);
+bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
+                             uint32_t* outBinding, uint32_t* outLen, std::vector<uint8_t>* outMask,
+                             std::string* why);
 // The name a stage compiled from these is filed under in the cache ("" with no cache configured): for the tests
 std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known);
 // The visible functions a pipeline links (MTLLinkedFunctions), for the compiles on this thread while a LinkedScope

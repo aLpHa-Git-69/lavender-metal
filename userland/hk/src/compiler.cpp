@@ -63,7 +63,7 @@ bool knownBufferControlBytes(const void*, size_t, const FunctionConstants&, uint
     return false;
 }
 
-bool firstSmallConstantBuffer(const void*, size_t, const FunctionConstants&, uint32_t*, uint32_t*, std::string* why) {
+bool detectUberControlBuffer(const void*, size_t, const FunctionConstants&, uint32_t*, uint32_t*, std::vector<uint8_t>*, std::string* why) {
     *why = "no compiler in this build";
     return false;
 }
@@ -1526,25 +1526,105 @@ std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionC
     return stageCacheName(bitcode, size, constants, iboBase, known);
 }
 
-bool firstSmallConstantBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
-                              uint32_t* outBinding, uint32_t* outSize, std::string* why) {
+bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
+                             uint32_t* outBinding, uint32_t* outLen, std::vector<uint8_t>* outMask,
+                             std::string* why) {
     if (theCompiler() == nullptr) return refuse(why, "ir3 has no compiler");
     KnownBuffer none;
     Translation t;
     if (!translate(bitcode, size, t, why, constants, &none)) return false;
-    int best = -1;
-    uint32_t bestSize = 0;
-    for (unsigned i = 0; i < t.info.num_resources; i++) {
-        const air_resource& r = t.info.resources[i];
-        if (r.kind == AIR_RESOURCE_CONSTANT_BUFFER && r.size > 0 && r.size <= 256 &&
-            (best < 0 || r.index < (uint32_t)best)) {
-            best = (int)r.index;
-            bestSize = r.size;
+
+    std::vector<nir_def*> work;
+    std::set<nir_def*> seen;
+    auto want = [&](nir_src& src) {
+        if (seen.insert(src.ssa).second) work.push_back(src.ssa);
+    };
+    unsigned nIfs = 0, nUbo = 0, nUboHit = 0;
+    nir_foreach_function_impl(impl, t.nir) {
+        nir_foreach_block(block, impl) {
+            if (nir_if* branch = nir_block_get_following_if(block)) {
+                want(branch->condition);
+                nIfs++;
+            }
+            nir_foreach_instr(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
+                if (in->intrinsic == nir_intrinsic_load_ubo) nUbo++;
+                switch (in->intrinsic) {
+                case nir_intrinsic_load_ubo:
+                case nir_intrinsic_load_ssbo:
+                    want(in->src[0]);
+                    want(in->src[1]);
+                    break;
+                case nir_intrinsic_store_ssbo:
+                    want(in->src[1]);
+                    want(in->src[2]);
+                    break;
+                case nir_intrinsic_load_global:
+                case nir_intrinsic_load_scratch:
+                    want(in->src[0]);
+                    break;
+                case nir_intrinsic_store_global:
+                case nir_intrinsic_store_scratch:
+                    want(in->src[1]);
+                    break;
+                default:
+                    break;
+                }
+            }
         }
     }
-    if (best < 0) return refuse(why, "no small constant buffer");
-    *outBinding = (uint32_t)best;
-    *outSize = bestSize;
+
+    static constexpr size_t kMaxBytes = 512;
+    uint8_t masks[32][kMaxBytes]{};
+    uint32_t maxEnd[32]{};
+    uint32_t nCtrl[32]{};
+    while (!work.empty()) {
+        nir_def* def = work.back();
+        work.pop_back();
+        nir_instr* parent = def->parent_instr;
+        if (parent->type == nir_instr_type_alu) {
+            nir_alu_instr* alu = nir_instr_as_alu(parent);
+            for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) want(alu->src[i].src);
+        } else if (parent->type == nir_instr_type_phi) {
+            nir_foreach_phi_src(ps, nir_instr_as_phi(parent)) want(ps->src);
+        } else if (parent->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr* in = nir_instr_as_intrinsic(parent);
+            if (in->intrinsic != nir_intrinsic_load_ubo || !nir_src_is_const(in->src[0])) continue;
+            nUboHit++;
+            const uint32_t b = uint32_t(nir_src_as_uint(in->src[0]));
+            if (b >= 32 || !nir_src_is_const(in->src[1])) continue;
+            const uint64_t at = nir_src_as_uint(in->src[1]);
+            const uint64_t n = uint64_t(in->def.num_components) * (in->def.bit_size / 8);
+            if (n == 0 || at + n > kMaxBytes) continue;
+            for (uint64_t i = at; i < at + n; i++) {
+                if (!masks[b][i]) {
+                    masks[b][i] = 1;
+                    nCtrl[b]++;
+                }
+            }
+            if (at + n > maxEnd[b]) maxEnd[b] = uint32_t(at + n);
+        }
+    }
+
+    int best = -1;
+    for (int b = 0; b < 32; b++) {
+        if (nCtrl[b] > 0 && (best < 0 || nCtrl[b] > nCtrl[best])) best = b;
+    }
+    if (best < 0) {
+        std::string info = "no UBO control bytes (ifs=" + std::to_string(nIfs) +
+                           " ubo=" + std::to_string(nUbo) + " hit=" + std::to_string(nUboHit) +
+                           " res=" + std::to_string(t.info.num_resources) + ":";
+        for (unsigned i = 0; i < t.info.num_resources && i < 8; i++) {
+            const air_resource& r = t.info.resources[i];
+            info += " k" + std::to_string(int(r.kind)) + "i" + std::to_string(r.index) + "s" + std::to_string(r.size);
+        }
+        info += ")";
+        return refuse(why, info);
+    }
+    *outBinding = uint32_t(best);
+    *outLen = maxEnd[best];
+    outMask->assign(masks[best], masks[best] + maxEnd[best]);
     return true;
 }
 

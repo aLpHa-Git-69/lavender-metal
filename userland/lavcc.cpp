@@ -234,23 +234,31 @@ extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, st
 }
 
 extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, int* out_binding, uint32_t* out_len,
-                               uint8_t* mask, size_t mask_cap)
+                               uint8_t* mask, size_t mask_cap, char* why, size_t whysize)
 {
     const MetalFunction* fn = lf->lib.find(fname);
-    if (!fn || fn->type != MetalFunction::kFragment) return 0;
+    if (!fn || fn->type != MetalFunction::kFragment) {
+        if (why && whysize) snprintf(why, whysize, "not a fragment function");
+        return 0;
+    }
     const uint8_t* bc = nullptr;
     uint64_t n = 0;
-    if (!lf->lib.bitcode(*fn, &bc, &n)) return 0;
+    if (!lf->lib.bitcode(*fn, &bc, &n)) {
+        if (why && whysize) snprintf(why, whysize, "no bitcode");
+        return 0;
+    }
     std::string w;
     uint32_t binding = 0, len = 0;
-    if (!firstSmallConstantBuffer(bc, n, {}, &binding, &len, &w)) return 0;
-    if (len == 0 || len > mask_cap) return 0;
     std::vector<uint8_t> ctrl;
-    if (!knownBufferControlBytes(bc, n, {}, binding, len, &ctrl, &w)) {
-        memset(mask, 1, len);
-    } else {
-        memcpy(mask, ctrl.data(), len);
+    if (!detectUberControlBuffer(bc, n, {}, &binding, &len, &ctrl, &w)) {
+        if (why && whysize) snprintf(why, whysize, "%s", w.c_str());
+        return 0;
     }
+    if (len == 0 || len > mask_cap || ctrl.size() < len) {
+        if (why && whysize) snprintf(why, whysize, "len %u > cap %zu", len, mask_cap);
+        return 0;
+    }
+    memcpy(mask, ctrl.data(), len);
     *out_binding = (int)binding;
     *out_len = len;
     return 1;

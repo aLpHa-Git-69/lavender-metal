@@ -2236,6 +2236,8 @@ registerObjectClasses(Class device)
 		ADD(gBufferClass, "gpuAddress", bufferGPUAddress, "Q@:");
 		ADD(gBufferClass, "didModifyRange:", bufferDidModify, "v@:{_NSRange=QQ}");
 		ADD(gBufferClass, "setPurgeableState:", bufferPurgeable, "Q@:Q");
+		ADD(gBufferClass, "newTextureWithDescriptor:offset:bytesPerRow:", bufferNewTexture, "@@:@QQ");
+		ADD(gBufferClass, "newLinearTextureWithDescriptor:offset:bytesPerRow:bytesPerImage:", bufferNewLinearTexture, "@@:@QQQ");
 		objc_registerClassPair(gBufferClass);
 		ADD(device, "newBufferWithLength:options:", deviceNewBuffer, "@@:QQ");
 		ADD(device, "newBufferWithBytes:length:options:", deviceNewBufferBytes, "@@:r^vQQ");
