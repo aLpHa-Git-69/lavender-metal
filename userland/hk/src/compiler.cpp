@@ -63,6 +63,11 @@ bool knownBufferControlBytes(const void*, size_t, const FunctionConstants&, uint
     return false;
 }
 
+bool firstSmallConstantBuffer(const void*, size_t, const FunctionConstants&, uint32_t*, uint32_t*, std::string* why) {
+    *why = "no compiler in this build";
+    return false;
+}
+
 std::string stageCacheFileName(const void*, size_t, const FunctionConstants&, uint32_t, const KnownBuffer*) { return {}; }
 
 #else
@@ -1519,6 +1524,28 @@ std::unique_ptr<CompiledStage> stageCacheLoad(const std::string& path, bool trus
 
 std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known) {
     return stageCacheName(bitcode, size, constants, iboBase, known);
+}
+
+bool firstSmallConstantBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
+                              uint32_t* outBinding, uint32_t* outSize, std::string* why) {
+    if (theCompiler() == nullptr) return refuse(why, "ir3 has no compiler");
+    KnownBuffer none;
+    Translation t;
+    if (!translate(bitcode, size, t, why, constants, &none)) return false;
+    int best = -1;
+    uint32_t bestSize = 0;
+    for (unsigned i = 0; i < t.info.num_resources; i++) {
+        const air_resource& r = t.info.resources[i];
+        if (r.kind == AIR_RESOURCE_CONSTANT_BUFFER && r.size > 0 && r.size <= 256 &&
+            (best < 0 || r.index < (uint32_t)best)) {
+            best = (int)r.index;
+            bestSize = r.size;
+        }
+    }
+    if (best < 0) return refuse(why, "no small constant buffer");
+    *outBinding = (uint32_t)best;
+    *outSize = bestSize;
+    return true;
 }
 
 bool knownBufferControlBytes(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t binding, size_t length,

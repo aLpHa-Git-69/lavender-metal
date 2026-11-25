@@ -29,6 +29,7 @@
 #include <IOKit/IOKitLib.h>
 #include "lava5.h"
 #include "lavcc.h"
+#include <Block.h>
 #include <mach/mach.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -607,6 +608,9 @@ struct bufstate {
 	struct lbuf b;
 	uint64_t options;
 	id label;
+	void * nocopyPtr;
+	uint64_t nocopyLen;
+	void (^deallocator)(void *, NSUInteger);
 };
 
 static id
@@ -648,6 +652,27 @@ deviceNewBufferBytes(id self, SEL _cmd, const void * bytes, uint64_t length, uin
 	return o;
 }
 
+static id
+deviceNewBufferNoCopy(id self, SEL _cmd, void * bytes, uint64_t length, uint64_t options,
+    void (^deallocator)(void *, NSUInteger))
+{
+	id o = deviceNewBuffer(self, _cmd, length, options);
+
+	if (o != nil) {
+		struct bufstate * st = STATE(o, struct bufstate);
+
+		if (bytes != NULL && length != 0) {
+			memcpy(st->b.cpu, bytes, (size_t)length);
+		}
+		st->nocopyPtr = bytes;
+		st->nocopyLen = length;
+		if (deallocator != NULL) {
+			st->deallocator = Block_copy(deallocator);
+		}
+	}
+	return o;
+}
+
 static void
 bufferDealloc(id self, __unused SEL _cmd)
 {
@@ -657,6 +682,11 @@ bufferDealloc(id self, __unused SEL _cmd)
 	pthread_mutex_lock(&gGPULock);
 	lavBufFree(&st->b);
 	pthread_mutex_unlock(&gGPULock);
+	if (st->deallocator != NULL) {
+		st->deallocator(st->nocopyPtr, (NSUInteger)st->nocopyLen);
+		Block_release(st->deallocator);
+		st->deallocator = NULL;
+	}
 	[st->label release];
 	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, sel_registerName("dealloc"));
 }
@@ -731,7 +761,15 @@ bufferSetLabel(id self, __unused SEL _cmd, id label)
 
 /* ---- queue, command buffer, blit encoder ---- */
 
-enum opkind { OP_FILL, OP_COPY, OP_DISPATCH, OP_CLEAR, OP_DRAW };
+enum opkind { OP_FILL, OP_COPY, OP_COPY_TEX, OP_DISPATCH, OP_CLEAR, OP_DRAW };
+
+typedef struct { uint64_t x, y, z; } LavOrigin;
+typedef struct { uint64_t width, height, depth; } LavSize;
+
+struct copytex {
+	id src, dst;
+	uint64_t sx, sy, dx, dy, w, h, slevel, dlevel;
+};
 
 /* a compute dispatch as the encoder had it when it was encoded: the pipeline, what is bound, the grid */
 struct dispatch {
@@ -770,6 +808,7 @@ struct draw {
 struct op {
 	enum opkind kind;
 	struct draw * draw;
+	struct copytex * copytex;
 	double clear[4];
 	id src, dst;                    /* retained buffers */
 	uint64_t srcOff, dstOff, size;
@@ -884,6 +923,11 @@ cbFreeOps(struct cbstate * st)
 			}
 			free(w);
 		}
+		if (st->ops[i].copytex != NULL) {
+			[st->ops[i].copytex->src release];
+			[st->ops[i].copytex->dst release];
+			free(st->ops[i].copytex);
+		}
 		if (st->ops[i].disp != NULL) {
 			struct dispatch * d = st->ops[i].disp;
 
@@ -977,6 +1021,38 @@ encCopy(id self, __unused SEL _cmd, id src, uint64_t srcOff, id dst, uint64_t ds
 	op->srcOff = srcOff;
 	op->dstOff = dstOff;
 	op->size = size;
+}
+
+static void
+encCopyTex(id self, __unused SEL _cmd, id src, __unused uint64_t sslice, uint64_t slevel, LavOrigin sorig,
+    LavSize ssize, id dst, __unused uint64_t dslice, uint64_t dlevel, LavOrigin dorig)
+{
+	struct cbstate * st = STATE(STATE(self, struct encstate)->commandBuffer, struct cbstate);
+	struct op * op;
+	struct copytex * ct;
+
+	if (src == nil || dst == nil || ssize.width == 0 || ssize.height == 0) {
+		return;
+	}
+	op = cbAddOp(st);
+	ct = calloc(1, sizeof(*ct));
+	op->kind = OP_COPY_TEX;
+	op->copytex = ct;
+	ct->src = [src retain];
+	ct->dst = [dst retain];
+	ct->sx = sorig.x;
+	ct->sy = sorig.y;
+	ct->dx = dorig.x;
+	ct->dy = dorig.y;
+	ct->w = ssize.width;
+	ct->h = ssize.height;
+	ct->slevel = slevel;
+	ct->dlevel = dlevel;
+}
+
+static void
+encGenMips(__unused id self, __unused SEL _cmd, __unused id texture)
+{
 }
 
 static void
@@ -1162,7 +1238,7 @@ struct cenc {
 	uint32_t blen[LAV5_MAX_BUFFERS];
 };
 
-typedef struct { uint64_t width, height, depth; } LavSize;
+/* LavSize defined above */
 
 static void
 lavError(NSError ** err, NSString * domain, const char * why)
@@ -1854,6 +1930,7 @@ typedef void (^LavHandler)(id);
 
 static void cbSyncSurfaces(struct cbstate * st);
 static BOOL runClear(struct op * op);
+static BOOL runCopyTex(struct op * op);
 static BOOL runDraw(struct op * op);
 
 static void
@@ -1878,6 +1955,9 @@ cbCommit(id self, __unused SEL _cmd)
 			break;
 		case OP_COPY:
 			ok = runCopy(&st->ops[i]);
+			break;
+		case OP_COPY_TEX:
+			ok = runCopyTex(&st->ops[i]);
 			break;
 		case OP_CLEAR:
 			ok = runClear(&st->ops[i]);
@@ -2159,6 +2239,7 @@ registerObjectClasses(Class device)
 		objc_registerClassPair(gBufferClass);
 		ADD(device, "newBufferWithLength:options:", deviceNewBuffer, "@@:QQ");
 		ADD(device, "newBufferWithBytes:length:options:", deviceNewBufferBytes, "@@:r^vQQ");
+		ADD(device, "newBufferWithBytesNoCopy:length:options:deallocator:", deviceNewBufferNoCopy, "@@:^vQQ@?");
 	}
 	if ((gQueueClass = newClass("LavenderMetalQueue", "_MTLCommandQueue")) != Nil) {
 		declareFamily(gQueueClass, "MTLCommandQueue");
@@ -2208,6 +2289,8 @@ registerObjectClasses(Class device)
 		ADD(gBlitClass, "label", encLabel, "@@:");
 		ADD(gBlitClass, "setLabel:", encSetLabel, "v@:@");
 		ADD(gBlitClass, "copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:", encCopy, "v@:@Q@QQ");
+		ADD(gBlitClass, "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:", encCopyTex, "v@:@QQ{?=QQQ}{?=QQQ}@QQ{?=QQQ}");
+		ADD(gBlitClass, "generateMipmapsForTexture:", encGenMips, "v@:@");
 		ADD(gBlitClass, "fillBuffer:range:value:", encFill, "v@:@{_NSRange=QQ}C");
 		ADD(gBlitClass, "endEncoding", encEnd, "v@:");
 		ADD(gBlitClass, "synchronizeResource:", encNothing, "v@:@");

@@ -23,6 +23,11 @@ void lavcc_kernel_free(struct lav5_kernel * k);
  * lavcc_stage_free), 0 with the reason in WHY */
 int lavcc_compile_program(struct lavcc_lib * lv, const char * vname, struct lavcc_lib * lf, const char * fname, struct lav5_stage * vs,
     struct lav5_stage * fs, struct lav5_link * link, char * why, size_t whysize);
+int lavcc_uber_info(struct lavcc_lib * lf, const char * fname, int * out_binding, uint32_t * out_len,
+    uint8_t * mask, size_t mask_cap);
+int lavcc_compile_program_spec(struct lavcc_lib * lv, const char * vname, struct lavcc_lib * lf, const char * fname,
+    uint32_t binding, const uint8_t * bytes, const uint8_t * fold, uint32_t len,
+    struct lav5_stage * vs, struct lav5_stage * fs, struct lav5_link * link, char * why, size_t whysize);
 void lavcc_stage_free(struct lav5_stage * s);
 /* function I of the library compiled alone: 1 with a SUMMARY of what it uses, 0 with the reason in WHY, -1 past the end */
 int lavcc_probe(struct lavcc_lib * l, unsigned i, char * summary, size_t ssize, char * why, size_t whysize);

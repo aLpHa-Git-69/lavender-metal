@@ -5,7 +5,6 @@
 
 typedef struct { double x, y, w, h, znear, zfar; } LavViewport;
 typedef struct { uint64_t x, y, w, h; } LavScissor;
-typedef struct { uint64_t x, y, z; } LavOrigin;
 typedef struct { LavOrigin origin; LavSize size; } LavRegion;
 typedef struct { double r, g, b, a; } LavClear;
 
@@ -29,10 +28,18 @@ msgAt(id o, const char * sel, uint64_t i)
 
 #define PF_A8         1
 #define PF_R8         10
+#define PF_R16        23
+#define PF_R16F       25
+#define PF_RG8        30
+#define PF_B5G6R5     40
+#define PF_BGR5A1     43
+#define PF_R32F       55
 #define PF_RGBA8      70
 #define PF_RGBA8_SRGB 71
 #define PF_BGRA8      80
 #define PF_BGRA8_SRGB 81
+#define PF_RG32F      105
+#define PF_RGBA16F    115
 
 static uint32_t
 lavFmtFromMetal(uint32_t mtlFmt, uint32_t * bpp)
@@ -40,10 +47,18 @@ lavFmtFromMetal(uint32_t mtlFmt, uint32_t * bpp)
 	switch (mtlFmt) {
 	case PF_A8:         if (bpp) *bpp = 1; return LAV5_FMT_A8;
 	case PF_R8:         if (bpp) *bpp = 1; return LAV5_FMT_R8;
+	case PF_R16:        if (bpp) *bpp = 2; return LAV5_FMT_R16;
+	case PF_R16F:       if (bpp) *bpp = 2; return LAV5_FMT_R16F;
+	case PF_RG8:        if (bpp) *bpp = 2; return LAV5_FMT_RG8;
+	case PF_B5G6R5:     if (bpp) *bpp = 2; return LAV5_FMT_B5G6R5;
+	case PF_BGR5A1:     if (bpp) *bpp = 2; return LAV5_FMT_BGR5A1;
+	case PF_R32F:       if (bpp) *bpp = 4; return LAV5_FMT_R32F;
 	case PF_RGBA8:      if (bpp) *bpp = 4; return LAV5_FMT_RGBA8;
 	case PF_RGBA8_SRGB: if (bpp) *bpp = 4; return LAV5_FMT_RGBA8_SRGB;
 	case PF_BGRA8:      if (bpp) *bpp = 4; return LAV5_FMT_BGRA8;
 	case PF_BGRA8_SRGB: if (bpp) *bpp = 4; return LAV5_FMT_BGRA8_SRGB;
+	case PF_RG32F:      if (bpp) *bpp = 8; return LAV5_FMT_RG32F;
+	case PF_RGBA16F:    if (bpp) *bpp = 8; return LAV5_FMT_RGBA16F;
 	default:            if (bpp) *bpp = 0; return 0xffu;
 	}
 }
@@ -52,7 +67,7 @@ struct texstate {
 	IOSurfaceRef surface;                   /* retained: the texture is backed by an IOSurface; sync on read/present */
 	struct lbuf b;
 	uint32_t width, height, format, pitch;
-	uint32_t mips, bpp, lastSeed;
+	uint32_t mips, bpp, texType, lastSeed;
 	BOOL seedValid;
 	uint64_t usage, storage;
 	id label;
@@ -70,12 +85,15 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	uint32_t bpp = 0;
 	BOOL ok;
 
+	if (type == 0 && h == 0) {
+		h = 1;
+	}
 	if (!lavOpen() || w == 0 || h == 0 || w > 4096 || h > 4096) {
 		lavlog("newTexture %llux%llu refused", (unsigned long long)w, (unsigned long long)h);
 		return nil;
 	}
-	if (lavFmtFromMetal((uint32_t)fmt, &bpp) == 0xffu || type != 2 || depth > 1 || samples > 1 || layers > 1) {
-		lavlog("newTexture: pixel format %llu, type %llu, %llu mips, %llu samples, %llu layers: not served (2D A8/R8/RGBA8/BGRA8/sRGB only)",
+	if (lavFmtFromMetal((uint32_t)fmt, &bpp) == 0xffu || (type != 2 && type != 0) || depth > 1 || samples > 1 || layers > 1) {
+		lavlog("newTexture: pixel format %llu, type %llu, %llu mips, %llu samples, %llu layers: not served",
 		    (unsigned long long)fmt, (unsigned long long)type, (unsigned long long)mips, (unsigned long long)samples,
 		    (unsigned long long)layers);
 		return nil;
@@ -109,6 +127,7 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	st->pitch = (uint32_t)pitch;
 	st->mips = mips > 0 ? (uint32_t)mips : 1u;
 	st->bpp = bpp;
+	st->texType = (uint32_t)type;
 	st->usage = msgU(desc, "usage");
 	st->storage = msgU(desc, "storageMode");
 	lavdbg("texture %llux%llu format %llu, pitch %zu, at GPU %#llx", (unsigned long long)w, (unsigned long long)h,
@@ -178,6 +197,8 @@ cbSyncSurfaces(struct cbstate * st)
 			}
 		} else if (st->ops[i].kind == OP_CLEAR) {
 			cand[ncand++] = st->ops[i].dst;
+		} else if (st->ops[i].kind == OP_COPY_TEX && st->ops[i].copytex != NULL) {
+			cand[ncand++] = st->ops[i].copytex->dst;
 		}
 		for (size_t c = 0; c < ncand; c++) {
 			id tex = cand[c];
@@ -215,8 +236,8 @@ deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_
 		return nil;
 	}
 	sfmt = IOSurfaceGetPixelFormat(surface);
-	if (sfmt != 'BGRA' && sfmt != 'RGBA' && sfmt != 'L008') {
-		lavlog("newTexture from an IOSurface: pixel format %#x: only BGRA/RGBA/L008 served", sfmt);
+	if (sfmt != 'BGRA' && sfmt != 'RGBA' && sfmt != 'L008' && sfmt != 'LA08' && sfmt != 'RGhA') {
+		lavlog("newTexture from an IOSurface: pixel format %#x: only BGRA/RGBA/L008/LA08/RGhA served", sfmt);
 		return nil;
 	}
 	o = deviceNewTexture(self, cmd, desc);
@@ -276,7 +297,7 @@ static uint64_t texHeight(id self, __unused SEL _cmd) { return STATE(self, struc
 static uint64_t texZero(__unused id self, __unused SEL _cmd) { return 0; }
 static uint64_t texOne(__unused id self, __unused SEL _cmd) { return 1; }
 static uint64_t texMips(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->mips; }
-static uint64_t texType(__unused id self, __unused SEL _cmd) { return 2; }
+static uint64_t texType(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->texType; }
 static uint64_t texFormat(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->format; }
 static uint64_t texUsage(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->usage; }
 static uint64_t texStorage(id self, __unused SEL _cmd) { return STATE(self, struct texstate)->storage; }
@@ -343,6 +364,15 @@ texReplaceSlice(id self, SEL cmd, LavRegion r, uint64_t level, __unused uint64_t
 
 /* ---- the render pipeline state ---- */
 
+#define RPIPE_MAX_SPECS 64
+
+struct rpipe_spec {
+	uint8_t key[256];
+	struct lav5_stage vs, fs;
+	struct lav5_link link;
+	struct lbuf vcode, fcode;
+};
+
 struct rpipe {
 	struct lav5_blend blend[8];
 	id vfn, ffn;                            /* retained */
@@ -353,10 +383,16 @@ struct rpipe {
 	struct lav5_attr attr[16];
 	uint32_t stride[LAV5_MAX_BUFFERS];
 	id label;
+	/* uber-shader specialization on a small constant buffer (e.g. CoreAnimation's FragmentShaderConfig) */
+	int spec_binding;
+	uint32_t spec_len;
+	uint8_t spec_mask[256];
+	struct rpipe_spec * specs;
+	uint32_t nspecs, spec_cap;
 };
 
 static BOOL
-codeBuf(struct lbuf * b, const struct lav5_kernel * k)
+codeBufLocked(struct lbuf * b, const struct lav5_kernel * k)
 {
 	size_t len = (size_t)k->instrlen * 128;
 	BOOL ok;
@@ -364,13 +400,22 @@ codeBuf(struct lbuf * b, const struct lav5_kernel * k)
 	if (len < (size_t)k->nwords * 4) {
 		len = (size_t)k->nwords * 4;
 	}
-	pthread_mutex_lock(&gGPULock);
 	ok = lavBufNew((len + 4095) & ~(size_t)4095, b);
-	pthread_mutex_unlock(&gGPULock);
 	if (ok) {
 		memset(b->cpu, 0, b->len);
 		memcpy(b->cpu, k->words, (size_t)k->nwords * 4);
 	}
+	return ok;
+}
+
+static BOOL
+codeBuf(struct lbuf * b, const struct lav5_kernel * k)
+{
+	BOOL ok;
+
+	pthread_mutex_lock(&gGPULock);
+	ok = codeBufLocked(b, k);
+	pthread_mutex_unlock(&gGPULock);
 	return ok;
 }
 
@@ -435,10 +480,11 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564331u
+#define PIPE_CACHE_MAGIC 0x4c564332u
 
 static void
-pipeCachePath(struct fnstate * vs, struct fnstate * fs, char * path, size_t n)
+pipeCachePathSpec(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen,
+    char * path, size_t n)
 {
 	uint64_t h = 0xcbf29ce484222325ull;
 	const char * stamp = __DATE__ __TIME__;
@@ -448,7 +494,18 @@ pipeCachePath(struct fnstate * vs, struct fnstate * fs, char * path, size_t n)
 	h = lavHash64(h, &STATE(fs->library, struct libstate)->hash, 8);
 	h = lavHash64(h, [vs->name UTF8String], strlen([vs->name UTF8String]) + 1);
 	h = lavHash64(h, [fs->name UTF8String], strlen([fs->name UTF8String]) + 1);
+	if (binding >= 0 && key != NULL && keylen > 0) {
+		uint32_t b = (uint32_t)binding;
+		h = lavHash64(h, &b, sizeof(b));
+		h = lavHash64(h, key, keylen);
+	}
 	snprintf(path, n, PIPE_CACHE_DIR "/%016llx.pipe", (unsigned long long)h);
+}
+
+static void
+pipeCachePath(struct fnstate * vs, struct fnstate * fs, char * path, size_t n)
+{
+	pipeCachePathSpec(vs, fs, -1, NULL, 0, path, n);
 }
 
 static BOOL
@@ -478,28 +535,37 @@ pipeReadStage(FILE * f, struct lav5_stage * st)
 }
 
 static BOOL
-pipeCacheLoad(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
+pipeCacheLoadSpec(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen,
+    struct lav5_stage * out_vs, struct lav5_stage * out_fs, struct lav5_link * out_link)
 {
 	char path[160];
 	uint32_t magic = 0;
 	FILE * f;
 	BOOL ok;
 
-	pipeCachePath(vs, fs, path, sizeof(path));
+	pipeCachePathSpec(vs, fs, binding, key, keylen, path, sizeof(path));
 	f = fopen(path, "rb");
 	if (f == NULL) {
 		return NO;
 	}
-	ok = fread(&magic, 4, 1, f) == 1 && magic == PIPE_CACHE_MAGIC && fread(&rp->link, sizeof(rp->link), 1, f) == 1 &&
-	    pipeReadStage(f, &rp->vs) && pipeReadStage(f, &rp->fs);
+	ok = fread(&magic, 4, 1, f) == 1 && magic == PIPE_CACHE_MAGIC && fread(out_link, sizeof(*out_link), 1, f) == 1 &&
+	    pipeReadStage(f, out_vs) && pipeReadStage(f, out_fs);
 	fclose(f);
 	if (!ok) {
-		memset(&rp->vs, 0, sizeof(rp->vs));
-		memset(&rp->fs, 0, sizeof(rp->fs));
+		memset(out_vs, 0, sizeof(*out_vs));
+		memset(out_fs, 0, sizeof(*out_fs));
 		return NO;
 	}
-	lavlog("pipeline cache: %s + %s", [vs->name UTF8String], [fs->name UTF8String]);
+	if (binding < 0) {
+		lavlog("pipeline cache: %s + %s", [vs->name UTF8String], [fs->name UTF8String]);
+	}
 	return YES;
+}
+
+static BOOL
+pipeCacheLoad(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
+{
+	return pipeCacheLoadSpec(vs, fs, -1, NULL, 0, &rp->vs, &rp->fs, &rp->link);
 }
 
 static void
@@ -517,7 +583,8 @@ pipeWriteStage(FILE * f, const struct lav5_stage * st)
 }
 
 static void
-pipeCacheStore(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
+pipeCacheStoreSpec(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen,
+    const struct lav5_stage * st_vs, const struct lav5_stage * st_fs, const struct lav5_link * st_link)
 {
 	char path[160], tmp[176];
 	uint32_t magic = PIPE_CACHE_MAGIC;
@@ -525,21 +592,27 @@ pipeCacheStore(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
 
 	mkdir(PIPE_CACHE_DIR, 01777);
 	chmod(PIPE_CACHE_DIR, 01777);
-	pipeCachePath(vs, fs, path, sizeof(path));
+	pipeCachePathSpec(vs, fs, binding, key, keylen, path, sizeof(path));
 	snprintf(tmp, sizeof(tmp), "%s.%d", path, (int)getpid());
 	f = fopen(tmp, "wb");
 	if (f == NULL) {
 		return;
 	}
 	fwrite(&magic, 4, 1, f);
-	fwrite(&rp->link, sizeof(rp->link), 1, f);
-	pipeWriteStage(f, &rp->vs);
-	pipeWriteStage(f, &rp->fs);
+	fwrite(st_link, sizeof(*st_link), 1, f);
+	pipeWriteStage(f, st_vs);
+	pipeWriteStage(f, st_fs);
 	if (fclose(f) == 0) {
 		rename(tmp, path);
 	} else {
 		unlink(tmp);
 	}
+}
+
+static void
+pipeCacheStore(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
+{
+	pipeCacheStoreSpec(vs, fs, -1, NULL, 0, &rp->vs, &rp->fs, &rp->link);
 }
 
 static id
@@ -569,6 +642,7 @@ makeRenderPipeline(id desc, NSError ** err)
 	}
 	rp = STATE(o, struct rpipe);
 	memset(rp, 0, sizeof(*rp));
+	rp->spec_binding = -1;
 	pthread_mutex_lock(&gCCLock);
 	ok = pipeCacheLoad(vs, fs, rp);
 	if (!ok) {
@@ -576,6 +650,28 @@ makeRenderPipeline(id desc, NSError ** err)
 		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
 		if (ok) {
 			pipeCacheStore(vs, fs, rp);
+		}
+	}
+	if (ok && rp->fs.k.nwords >= 4096) {
+		int sb = -1;
+		uint32_t slen = 0;
+
+		if (lavcc_uber_info(STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], &sb, &slen,
+		    rp->spec_mask, sizeof(rp->spec_mask)) && sb >= 0 && sb < LAV5_MAX_BUFFERS && slen > 0 && slen <= 256) {
+			BOOL any = NO;
+
+			for (uint32_t i = 0; i < slen; i++) {
+				if (rp->spec_mask[i]) {
+					any = YES;
+					break;
+				}
+			}
+			if (any) {
+				rp->spec_binding = sb;
+				rp->spec_len = slen;
+				lavlog("render pipeline %s + %s: uber-shader (%u fs words), will specialize on fs buffer %d (%u bytes)",
+				    [vs->name UTF8String], [fs->name UTF8String], rp->fs.k.nwords, sb, slen);
+			}
 		}
 	}
 	pthread_mutex_unlock(&gCCLock);
@@ -678,7 +774,20 @@ rpDealloc(id self, __unused SEL _cmd)
 	if (st->fcode.handle != 0) {
 		lavBufFree(&st->fcode);
 	}
+	for (uint32_t i = 0; i < st->nspecs; i++) {
+		if (st->specs[i].vcode.handle != 0) {
+			lavBufFree(&st->specs[i].vcode);
+		}
+		if (st->specs[i].fcode.handle != 0) {
+			lavBufFree(&st->specs[i].fcode);
+		}
+	}
 	pthread_mutex_unlock(&gGPULock);
+	for (uint32_t i = 0; i < st->nspecs; i++) {
+		lavcc_stage_free(&st->specs[i].vs);
+		lavcc_stage_free(&st->specs[i].fs);
+	}
+	free(st->specs);
 	lavcc_stage_free(&st->vs);
 	lavcc_stage_free(&st->fs);
 	[st->vfn release];
@@ -1186,6 +1295,32 @@ clamp8(double v)
 	return v <= 0 ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255.0 + 0.5);
 }
 
+static uint16_t
+f32ToF16(float f)
+{
+	uint32_t u;
+	uint32_t sign, exp, mant;
+
+	memcpy(&u, &f, 4);
+	sign = (u >> 16) & 0x8000u;
+	exp = (u >> 23) & 0xffu;
+	mant = u & 0x7fffffu;
+	if (exp == 255) {
+		return (uint16_t)(sign | 0x7c00u | (mant ? 0x0200u : 0u));
+	}
+	if (exp > 142) {
+		return (uint16_t)(sign | 0x7c00u);
+	}
+	if (exp < 113) {
+		if (exp < 103) {
+			return (uint16_t)sign;
+		}
+		mant |= 0x800000u;
+		return (uint16_t)(sign | (mant >> (126 - exp)));
+	}
+	return (uint16_t)(sign | ((exp - 112) << 10) | (mant >> 13));
+}
+
 static BOOL
 runClear(struct op * op)
 {
@@ -1198,16 +1333,177 @@ runClear(struct op * op)
 		for (uint32_t y = 0; y < t->height; y++) {
 			memset((uint8_t *)t->b.cpu + (size_t)y * t->pitch, v, t->width);
 		}
-	} else {
-		uint32_t px = (t->format == PF_BGRA8 || t->format == PF_BGRA8_SRGB) ?
-		    (b | g << 8 | r << 16 | a << 24) : (r | g << 8 | b << 16 | a << 24);
+	} else if (t->bpp == 2) {
+		uint16_t px = 0;
+
+		if (t->format == PF_RG8) {
+			px = (uint16_t)(r | (g << 8));
+		} else if (t->format == PF_R16) {
+			double v = op->clear[0];
+			px = (uint16_t)(v <= 0 ? 0 : v >= 1 ? 65535 : (uint32_t)(v * 65535.0 + 0.5));
+		} else if (t->format == PF_R16F) {
+			px = f32ToF16((float)op->clear[0]);
+		} else if (t->format == PF_B5G6R5) {
+			px = (uint16_t)(((b >> 3) & 0x1fu) | (((g >> 2) & 0x3fu) << 5) | (((r >> 3) & 0x1fu) << 11));
+		} else if (t->format == PF_BGR5A1) {
+			px = (uint16_t)(((b >> 3) & 0x1fu) | (((g >> 3) & 0x1fu) << 5) | (((r >> 3) & 0x1fu) << 10) | ((a >= 128 ? 1u : 0u) << 15));
+		}
+		for (uint32_t y = 0; y < t->height; y++) {
+			uint16_t * row = (uint16_t *)((uint8_t *)t->b.cpu + (size_t)y * t->pitch);
+
+			for (uint32_t x = 0; x < t->width; x++) {
+				row[x] = px;
+			}
+		}
+	} else if (t->bpp == 4) {
+		uint32_t px;
 		size_t rowBytes = (size_t)t->width * 4;
 
+		if (t->format == PF_R32F) {
+			float f = (float)op->clear[0];
+			memcpy(&px, &f, 4);
+		} else {
+			px = (t->format == PF_BGRA8 || t->format == PF_BGRA8_SRGB) ?
+			    (b | g << 8 | r << 16 | a << 24) : (r | g << 8 | b << 16 | a << 24);
+		}
 		for (uint32_t y = 0; y < t->height; y++) {
 			memset_pattern4((uint8_t *)t->b.cpu + (size_t)y * t->pitch, &px, rowBytes);
 		}
+	} else if (t->bpp == 8) {
+		uint64_t px = 0;
+		size_t rowBytes = (size_t)t->width * 8;
+
+		if (t->format == PF_RG32F) {
+			float f[2] = { (float)op->clear[0], (float)op->clear[1] };
+			memcpy(&px, f, 8);
+		} else {
+			uint16_t h[4] = { f32ToF16((float)op->clear[0]), f32ToF16((float)op->clear[1]),
+			    f32ToF16((float)op->clear[2]), f32ToF16((float)op->clear[3]) };
+			memcpy(&px, h, 8);
+		}
+		for (uint32_t y = 0; y < t->height; y++) {
+			memset_pattern8((uint8_t *)t->b.cpu + (size_t)y * t->pitch, &px, rowBytes);
+		}
 	}
 	return YES;
+}
+
+static BOOL
+runCopyTex(struct op * op)
+{
+	struct copytex * ct = op->copytex;
+	struct texstate * s, * d;
+
+	if (ct == NULL || ct->src == nil || ct->dst == nil) {
+		return YES;
+	}
+	if (object_getClass(ct->src) != gTextureClass || object_getClass(ct->dst) != gTextureClass) {
+		return YES;
+	}
+	s = STATE(ct->src, struct texstate);
+	d = STATE(ct->dst, struct texstate);
+	if (ct->slevel != 0 || ct->dlevel != 0) {
+		return YES;
+	}
+	if (s->bpp != d->bpp || ct->sx + ct->w > s->width || ct->sy + ct->h > s->height ||
+	    ct->dx + ct->w > d->width || ct->dy + ct->h > d->height) {
+		lavlog("copyFromTexture: bounds/bpp mismatch (%ux%u bpp %u -> %ux%u bpp %u)",
+		    s->width, s->height, s->bpp, d->width, d->height, d->bpp);
+		return NO;
+	}
+	surfacePullIfDirty(s);
+	for (uint64_t y = 0; y < ct->h; y++) {
+		memcpy((uint8_t *)d->b.cpu + (ct->dy + y) * d->pitch + ct->dx * d->bpp,
+		    (const uint8_t *)s->b.cpu + (ct->sy + y) * s->pitch + ct->sx * s->bpp,
+		    (size_t)ct->w * s->bpp);
+	}
+	return YES;
+}
+
+static struct rpipe_spec *
+pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
+{
+	uint8_t key[256];
+	const struct lav5_binding * b;
+	struct fnstate * vs, * fs;
+	struct lav5_stage svs, sfs;
+	struct lav5_link slink;
+	struct lbuf vc = { 0 }, fc = { 0 };
+	struct rpipe_spec * sp;
+	char why[256] = "";
+	int ok;
+
+	if (rp->spec_binding < 0 || rp->spec_binding >= LAV5_MAX_BUFFERS || rp->spec_len == 0 || rp->spec_len > 256) {
+		return NULL;
+	}
+	b = &fs_buf[rp->spec_binding];
+	if (b->cpu == NULL || b->bytes < rp->spec_len) {
+		return NULL;
+	}
+	for (uint32_t i = 0; i < rp->spec_len; i++) {
+		key[i] = rp->spec_mask[i] ? ((const uint8_t *)b->cpu)[i] : 0;
+	}
+	for (uint32_t i = 0; i < rp->nspecs; i++) {
+		if (memcmp(rp->specs[i].key, key, rp->spec_len) == 0) {
+			return &rp->specs[i];
+		}
+	}
+	if (rp->nspecs >= RPIPE_MAX_SPECS) {
+		return NULL;
+	}
+	vs = STATE(rp->vfn, struct fnstate);
+	fs = STATE(rp->ffn, struct fnstate);
+	memset(&svs, 0, sizeof(svs));
+	memset(&sfs, 0, sizeof(sfs));
+	memset(&slink, 0, sizeof(slink));
+	pthread_mutex_lock(&gCCLock);
+	ok = pipeCacheLoadSpec(vs, fs, rp->spec_binding, key, rp->spec_len, &svs, &sfs, &slink);
+	if (!ok) {
+		ok = lavcc_compile_program_spec(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String],
+		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String],
+		    (uint32_t)rp->spec_binding, key, rp->spec_mask, rp->spec_len,
+		    &svs, &sfs, &slink, why, sizeof(why));
+		if (ok) {
+			pipeCacheStoreSpec(vs, fs, rp->spec_binding, key, rp->spec_len, &svs, &sfs, &slink);
+		}
+	}
+	pthread_mutex_unlock(&gCCLock);
+	if (!ok) {
+		lavlog("specialize %s + %s failed: %s", [vs->name UTF8String], [fs->name UTF8String], why);
+		return NULL;
+	}
+	if (!codeBufLocked(&vc, &svs.k) || !codeBufLocked(&fc, &sfs.k)) {
+		if (vc.handle != 0) lavBufFree(&vc);
+		if (fc.handle != 0) lavBufFree(&fc);
+		lavcc_stage_free(&svs);
+		lavcc_stage_free(&sfs);
+		return NULL;
+	}
+	if (rp->nspecs == rp->spec_cap) {
+		uint32_t nc = rp->spec_cap == 0 ? 8 : rp->spec_cap * 2;
+		struct rpipe_spec * ns = realloc(rp->specs, nc * sizeof(*ns));
+
+		if (ns == NULL) {
+			lavBufFree(&vc);
+			lavBufFree(&fc);
+			lavcc_stage_free(&svs);
+			lavcc_stage_free(&sfs);
+			return NULL;
+		}
+		rp->specs = ns;
+		rp->spec_cap = nc;
+	}
+	sp = &rp->specs[rp->nspecs++];
+	memset(sp, 0, sizeof(*sp));
+	memcpy(sp->key, key, rp->spec_len);
+	sp->vs = svs;
+	sp->fs = sfs;
+	sp->link = slink;
+	sp->vcode = vc;
+	sp->fcode = fc;
+	lavlog("specialized %s[%u]: %u+%u words (was %u)", [fs->name UTF8String], rp->nspecs - 1,
+	    sp->vs.k.nwords, sp->fs.k.nwords, rp->fs.k.nwords);
+	return sp;
 }
 
 static BOOL
@@ -1267,12 +1563,30 @@ runDraw(struct op * op)
 		free(r);
 		return NO;
 	}
-	r->vs = &rp->vs;
-	r->fs = &rp->fs;
-	r->link = &rp->link;
-	r->vs_code = rp->vcode.gpu;
+	if (!bindStage(r->vs_buf, r->vbuf, d->vbuf, d->voff, d->vbytes, d->vblen, rp->stride, &boff, name) ||
+	    !bindStage(r->fs_buf, NULL, d->fbuf, d->foff, d->fbytes, d->fblen, NULL, &boff, name)) {
+		free(r);
+		return NO;
+	}
+	{
+		struct rpipe_spec * sp = pipeSelectSpec(rp, r->fs_buf);
+
+		if (sp != NULL) {
+			r->vs = &sp->vs;
+			r->fs = &sp->fs;
+			r->link = &sp->link;
+			r->vs_code = sp->vcode.gpu;
+			r->fs_code = sp->fcode.gpu;
+		} else {
+			r->vs = &rp->vs;
+			r->fs = &rp->fs;
+			r->link = &rp->link;
+			r->vs_code = rp->vcode.gpu;
+			r->fs_code = rp->fcode.gpu;
+		}
+	}
 	for (int i = 0; i < 2; i++) {
-		const struct lav5_stage * st = i == 0 ? &rp->vs : &rp->fs;
+		const struct lav5_stage * st = i == 0 ? r->vs : r->fs;
 		uint32_t bytes = lav5_pvtmem_bytes(st);
 
 		if (bytes == 0) {
@@ -1297,7 +1611,6 @@ runDraw(struct op * op)
 			r->fs_pvt_gpu = gPvt[i].gpu;
 		}
 	}
-	r->fs_code = rp->fcode.gpu;
 	r->rt_gpu = t->b.gpu;
 	r->rt_width = t->width;
 	r->rt_height = t->height;
@@ -1305,11 +1618,6 @@ runDraw(struct op * op)
 	r->rt_format = lavFmtFromMetal(t->format, NULL);
 	r->nattr = rp->nattr;
 	memcpy(r->attr, rp->attr, sizeof(r->attr));
-	if (!bindStage(r->vs_buf, r->vbuf, d->vbuf, d->voff, d->vbytes, d->vblen, rp->stride, &boff, name) ||
-	    !bindStage(r->fs_buf, NULL, d->fbuf, d->foff, d->fbytes, d->fblen, NULL, &boff, name)) {
-		free(r);
-		return NO;
-	}
 	r->prim = d->prim;
 	r->first = d->first;
 	r->count = d->count;

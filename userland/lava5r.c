@@ -457,6 +457,22 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 				rt_fmt = RB5_A8_UNORM; sw = WZYX; break;
 			case LAV5_FMT_R8:
 				rt_fmt = RB5_R8_UNORM; sw = WZYX; break;
+			case LAV5_FMT_RG8:
+				rt_fmt = RB5_R8G8_UNORM; sw = WZYX; break;
+			case LAV5_FMT_RGBA16F:
+				rt_fmt = RB5_R16G16B16A16_FLOAT; sw = WZYX; break;
+			case LAV5_FMT_R16:
+				rt_fmt = RB5_R16_UNORM; sw = WZYX; break;
+			case LAV5_FMT_R16F:
+				rt_fmt = RB5_R16_FLOAT; sw = WZYX; break;
+			case LAV5_FMT_R32F:
+				rt_fmt = RB5_R32_FLOAT; sw = WZYX; break;
+			case LAV5_FMT_RG32F:
+				rt_fmt = RB5_R32G32_FLOAT; sw = WZYX; break;
+			case LAV5_FMT_BGR5A1:
+				rt_fmt = RB5_R5G5B5A1_UNORM; sw = WXYZ; break;
+			case LAV5_FMT_B5G6R5:
+				rt_fmt = RB5_R5G6B5_UNORM; sw = WXYZ; break;
 			default: /* LAV5_FMT_BGRA8 */
 				rt_fmt = RB5_R8G8B8A8_UNORM; sw = WXYZ; break;
 			}
@@ -822,6 +838,29 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 					case LAV5_FMT_R8:
 						tfmt = TFMT5_8_UNORM;
 						sx = A5XX_TEX_X; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					case LAV5_FMT_RG8:
+						tfmt = TFMT5_8_8_UNORM;
+						sx = A5XX_TEX_X; sy = A5XX_TEX_Y; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					case LAV5_FMT_RGBA16F:
+						tfmt = TFMT5_16_16_16_16_FLOAT; break;
+					case LAV5_FMT_R16:
+						tfmt = TFMT5_16_UNORM;
+						sx = A5XX_TEX_X; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					case LAV5_FMT_R16F:
+						tfmt = TFMT5_16_FLOAT;
+						sx = A5XX_TEX_X; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					case LAV5_FMT_R32F:
+						tfmt = TFMT5_32_FLOAT;
+						sx = A5XX_TEX_X; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					case LAV5_FMT_RG32F:
+						tfmt = TFMT5_32_32_FLOAT;
+						sx = A5XX_TEX_X; sy = A5XX_TEX_Y; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_ONE; break;
+					case LAV5_FMT_BGR5A1:
+						tfmt = TFMT5_5_5_5_1_UNORM;
+						sx = A5XX_TEX_Z; sz = A5XX_TEX_X; break;
+					case LAV5_FMT_B5G6R5:
+						tfmt = TFMT5_5_6_5_UNORM;
+						sx = A5XX_TEX_Z; sz = A5XX_TEX_X; sw = A5XX_TEX_ONE; break;
 					default:
 						break;
 					}

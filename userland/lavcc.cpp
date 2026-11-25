@@ -233,6 +233,75 @@ extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, st
     return 1;
 }
 
+extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, int* out_binding, uint32_t* out_len,
+                               uint8_t* mask, size_t mask_cap)
+{
+    const MetalFunction* fn = lf->lib.find(fname);
+    if (!fn || fn->type != MetalFunction::kFragment) return 0;
+    const uint8_t* bc = nullptr;
+    uint64_t n = 0;
+    if (!lf->lib.bitcode(*fn, &bc, &n)) return 0;
+    std::string w;
+    uint32_t binding = 0, len = 0;
+    if (!firstSmallConstantBuffer(bc, n, {}, &binding, &len, &w)) return 0;
+    if (len == 0 || len > mask_cap) return 0;
+    std::vector<uint8_t> ctrl;
+    if (!knownBufferControlBytes(bc, n, {}, binding, len, &ctrl, &w)) {
+        memset(mask, 1, len);
+    } else {
+        memcpy(mask, ctrl.data(), len);
+    }
+    *out_binding = (int)binding;
+    *out_len = len;
+    return 1;
+}
+
+extern "C" int lavcc_compile_program_spec(struct lavcc_lib* lv, const char* vname, struct lavcc_lib* lf, const char* fname,
+                                          uint32_t binding, const uint8_t* bytes, const uint8_t* fold, uint32_t len,
+                                          struct lav5_stage* vs, struct lav5_stage* fs, struct lav5_link* link, char* why, size_t whysize)
+{
+    std::string w;
+    auto v = stage_of(lv, vname, MetalFunction::kVertex, &w);
+    if (!v) { snprintf(why, whysize, "vertex function: %s", w.c_str()); return 0; }
+    const MetalFunction* fn = lf->lib.find(fname);
+    if (!fn || fn->type != MetalFunction::kFragment) {
+        snprintf(why, whysize, "fragment function %s not found", fname);
+        return 0;
+    }
+    const uint8_t* bc = nullptr;
+    uint64_t n = 0;
+    if (!lf->lib.bitcode(*fn, &bc, &n)) {
+        snprintf(why, whysize, "no bitcode for %s", fname);
+        return 0;
+    }
+    KnownBuffer kb;
+    kb.binding = binding;
+    kb.bytes.assign(bytes, bytes + len);
+    if (fold != nullptr) kb.fold.assign(fold, fold + len);
+    auto f = compileStage(bc, n, &w, {}, 0, &kb);
+    if (!f) { snprintf(why, whysize, "fragment spec: %s", w.c_str()); return 0; }
+    Linkage lk{};
+    if (!render::link(v->stage, f->stage, &lk, &w)) { snprintf(why, whysize, "link: %s", w.c_str()); return 0; }
+    memset(vs, 0, sizeof *vs);
+    memset(fs, 0, sizeof *fs);
+    memset(link, 0, sizeof *link);
+    flatten_stage(v->stage, v->resources, vs);
+    flatten_stage(f->stage, f->resources, fs);
+    link->cnt = lk.cnt;
+    link->max_loc = lk.maxLoc;
+    link->position_loc = lk.positionLoc;
+    link->psize_loc = lk.psizeLoc;
+    for (int i = 0; i < 4; i++) link->varmask[i] = lk.varmask[i];
+    for (int i = 0; i < 8; i++) link->interp[i] = lk.interpMode[i];
+    for (uint32_t i = 0; i < 32; i++) {
+        link->var[i].slot = lk.var[i].slot;
+        link->var[i].regid = lk.var[i].regid;
+        link->var[i].compmask = lk.var[i].compmask;
+        link->var[i].loc = lk.var[i].loc;
+    }
+    return 1;
+}
+
 extern "C" void lavcc_stage_free(struct lav5_stage* s) { lavcc_kernel_free(&s->k); }
 
 // ---- a survey of a library: what each function needs, and whether this compiler serves it (lavsurvey) ----

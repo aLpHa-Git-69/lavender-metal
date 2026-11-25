@@ -119,6 +119,14 @@ enum lav5_fmt {
 	LAV5_FMT_RGBA8_SRGB = 3,
 	LAV5_FMT_A8         = 4,
 	LAV5_FMT_R8         = 5,
+	LAV5_FMT_RG8        = 6,
+	LAV5_FMT_RGBA16F    = 7,
+	LAV5_FMT_R16        = 8,
+	LAV5_FMT_R16F       = 9,
+	LAV5_FMT_R32F       = 10,
+	LAV5_FMT_RG32F      = 11,
+	LAV5_FMT_BGR5A1     = 12,
+	LAV5_FMT_B5G6R5     = 13,
 };
 
 /* a texture bound for the fragment stage: linear 2D */
