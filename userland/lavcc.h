@@ -16,8 +16,8 @@ struct lavcc_fc {
 	uint64_t bits;
 };
 
-#define LAVCC_MAX_UBER_BUFS 4
-#define LAVCC_UBER_BUF_CAP  256
+#define LAVCC_MAX_UBER_BUFS 8
+#define LAVCC_UBER_BUF_CAP  1024
 
 struct lavcc_uber_buf {
 	uint32_t binding;
@@ -47,8 +47,11 @@ void lavcc_kernel_free(struct lav5_kernel * k);
 int lavcc_compile_program(struct lavcc_lib * lv, const char * vname, const struct lavcc_fc * vfcs, uint32_t nvfcs,
     struct lavcc_lib * lf, const char * fname, const struct lavcc_fc * ffcs, uint32_t nffcs,
     struct lav5_stage * vs, struct lav5_stage * fs, struct lav5_link * link, char * why, size_t whysize);
+int lavcc_compile_vs(struct lavcc_lib * lv, const char * vname, const struct lavcc_fc * vfcs, uint32_t nvfcs,
+    struct lav5_stage * vs, char * why, size_t whysize);
 int lavcc_uber_info(struct lavcc_lib * lf, const char * fname, const struct lavcc_fc * ffcs, uint32_t nffcs,
-    struct lavcc_uber_buf * out_bufs, uint32_t * out_nbufs, char * summary, size_t sumsize, char * why, size_t whysize);
+    struct lavcc_uber_buf * out_bufs, uint32_t * out_nbufs, uint32_t * out_ifs, char * summary, size_t sumsize,
+    char * why, size_t whysize);
 int lavcc_compile_program_spec(struct lavcc_lib * lv, const char * vname, const struct lavcc_fc * vfcs, uint32_t nvfcs,
     struct lavcc_lib * lf, const char * fname, const struct lavcc_fc * ffcs, uint32_t nffcs,
     const struct lavcc_uber_val * uvals, uint32_t nuvals,

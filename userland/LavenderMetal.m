@@ -1676,8 +1676,20 @@ fnAttachConstants(struct fnstate * fs, id constants)
 			free(fs->fcs);
 			fs->fcs = arr;
 			fs->nfcs = n;
-			if (fcLog < 24) {
-				lavlog("newFunction %s with %u function constants (%u resolved by name)", fname, n, nNamed);
+			if (fcLog < 10) {
+				char nz[220] = "";
+				size_t p = 0;
+				if (nameCopy != nil) {
+					for (NSString * k in nameCopy) {
+						uint64_t val = [[nameCopy objectForKey:k] unsignedLongLongValue];
+						if (val != 0 && p + 32 < sizeof(nz)) {
+							p += (size_t)snprintf(nz + p, sizeof(nz) - p, "%s%s=%llu",
+							    p ? " " : "", [k UTF8String], (unsigned long long)val);
+						}
+					}
+				}
+				lavlog("newFunction %s with %u function constants (%u named%s%s)", fname, n, nNamed,
+				    p ? "; nz: " : "", nz);
 				fcLog++;
 			}
 		} else {
@@ -2406,6 +2418,12 @@ deviceZero(__unused id self, __unused SEL _cmd)
 	return 0;
 }
 
+static uint64_t
+deviceOne(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
 static Class
 newClass(const char * name, const char * base)
 {
@@ -2623,6 +2641,7 @@ lavenderMetalLoad(void)
 	ADD(cls, "isHeadless", deviceNo, "B@:");
 	ADD(cls, "supportsFeatureSet:", deviceNoFeatureSet, "B@:Q");
 	ADD(cls, "dedicatedMemorySize", deviceZero, "Q@:");
+	ADD(cls, "featureProfile", deviceOne, "Q@:");
 	registerObjectClasses(cls);
 	objc_registerClassPair(cls);
 	installFunctionConstantHooks();

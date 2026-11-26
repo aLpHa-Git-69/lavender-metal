@@ -64,7 +64,7 @@ bool knownBufferControlBytes(const void*, size_t, const FunctionConstants&, uint
     return false;
 }
 
-bool detectUberControlBuffers(const void*, size_t, const FunctionConstants&, std::vector<UberBufferInfo>*, std::string*, std::string* why) {
+bool detectUberControlBuffers(const void*, size_t, const FunctionConstants&, std::vector<UberBufferInfo>*, std::string*, std::string* why, uint32_t*) {
     *why = "no compiler in this build";
     return false;
 }
@@ -296,7 +296,9 @@ struct Translation {
 // a load of the known buffer at a constant offset inside its bytes: those bytes, as the load's components
 bool foldKnownLoad(nir_builder* b, nir_intrinsic_instr* intr, void* data) {
     const KnownBuffer* root = static_cast<const KnownBuffer*>(data);
-    if (intr->intrinsic != nir_intrinsic_load_ubo || !nir_src_is_const(intr->src[0]) || !nir_src_is_const(intr->src[1])) return false;
+    const bool isUbo = intr->intrinsic == nir_intrinsic_load_ubo;
+    const bool isSsbo = intr->intrinsic == nir_intrinsic_load_ssbo && root->allowSsbo;
+    if ((!isUbo && !isSsbo) || !nir_src_is_const(intr->src[0]) || !nir_src_is_const(intr->src[1])) return false;
     const uint32_t binding = uint32_t(nir_src_as_uint(intr->src[0]));
     const KnownBuffer* known = nullptr;
     if (root->binding == binding && !root->bytes.empty()) {
@@ -345,7 +347,7 @@ std::mutex gKeptLock;
 std::condition_variable gKeptChanged;
 std::vector<KeptTranslation> gKept;
 std::vector<uint64_t> gTranslating;   // (under gKeptLock) the keys a thread is translating now: the others wait for it
-constexpr size_t kKeptTranslations = 6;
+constexpr size_t kKeptTranslations = 16;
 
 // T a clone of KEY's kept NIR, true; or false, and KEY marked as this thread's to translate (doneTranslating after).
 // A thread that asks while another translates KEY waits for that one: the first specialisations of a module came three
@@ -470,30 +472,29 @@ bool translate(const void* bitcode, size_t size, Translation& t, std::string* wh
             ralloc_steal(t.mem, mem);
         }
     }
-    // the known buffer's reads folded, its offsets folded first (a field's offset is the front end's arithmetic on the
-    // pointer), until nothing more folds: a value read may decide the offset of another read
-    // (called directly, not under NIR_PASS: a debug build validates the whole shader after each, and an uber shader
-    // takes rounds of this. nir_copy_prop's own answer does not count: on CoreAnimation's uber shader it says it made
-    // progress every time, 21 000 rounds and on)
-    for (bool progress = known != nullptr; progress;) {
-        nir_copy_prop(t.nir);
-        progress = nir_opt_constant_folding(t.nir);
-        progress = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || progress;
-    }
-    // ...and the branches the folded values decide taken away at once, with what only they used: ir3's own passes
-    // would do the same, but only after running over the whole uber shader first (ir3_finalize_nir, 494 of a
-    // specialisation's 700 ms on this machine)
-    if (known != nullptr && getenv("HAKIOS_METAL_NO_EARLY_DCE") == nullptr) {
-        for (bool progress = true; progress;) {
-            progress = nir_opt_dead_cf(t.nir);
-            progress = nir_opt_dce(t.nir) || progress;
-            progress = nir_copy_prop(t.nir) || progress;
-            progress = nir_opt_constant_folding(t.nir) || progress;
+    const bool hasKnownBytes = known != nullptr && (!known->bytes.empty() || !known->extra.empty());
+    if (hasKnownBytes) {
+        const bool earlyDce = getenv("HAKIOS_METAL_NO_EARLY_DCE") == nullptr;
+        for (int iter = 0; iter < 64; iter++) {
+            nir_copy_prop(t.nir);
+            bool progress = nir_opt_constant_folding(t.nir);
+            progress = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || progress;
+            if (earlyDce) {
+                progress = nir_opt_dead_cf(t.nir) || progress;
+                progress = nir_opt_dce(t.nir) || progress;
+                progress = nir_opt_algebraic(t.nir) || progress;
+            }
+            if (!progress) break;
         }
-        // (the local arrays of the branches gone: the front end makes an alloca load_scratch and store_scratch, and a
-        // store has an effect DCE keeps. With no load left the stores are dead, and so is the private memory the
-        // module asked for -- left, ir3 gave a stage of 64 words 512 bytes a fiber, and compileStage compiled it a
-        // second time without its preamble for that)
+        if (earlyDce) dropUnreadScratch(t.nir);
+    } else if (known != nullptr && getenv("HAKIOS_METAL_NO_EARLY_DCE") == nullptr) {
+        for (int iter = 0; iter < 16; iter++) {
+            nir_copy_prop(t.nir);
+            bool progress = nir_opt_constant_folding(t.nir);
+            progress = nir_opt_dead_cf(t.nir) || progress;
+            progress = nir_opt_dce(t.nir) || progress;
+            if (!progress) break;
+        }
         dropUnreadScratch(t.nir);
     }
     phase("the known buffer folded");
@@ -1543,7 +1544,9 @@ std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionC
 }
 
 bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionConstants& constants,
-                              std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why) {
+                              std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why,
+                              uint32_t* outIfs) {
+    if (outIfs != nullptr) *outIfs = 0;
     if (theCompiler() == nullptr) return refuse(why, "ir3 has no compiler");
     KnownBuffer none;
     Translation t;
@@ -1554,7 +1557,8 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
     auto want = [&](nir_src& src) {
         if (seen.insert(src.ssa).second) work.push_back(src.ssa);
     };
-    unsigned nIfs = 0, nUbo = 0, nUboHit = 0;
+    bool writtenSsbo[32]{};
+    unsigned nIfs = 0, nUbo = 0, nUboHit = 0, nSsbo = 0, nSsboHit = 0, nDynOff = 0, nOverCap = 0;
     nir_foreach_function_impl(impl, t.nir) {
         nir_foreach_block(block, impl) {
             if (nir_if* branch = nir_block_get_following_if(block)) {
@@ -1565,6 +1569,7 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
                 if (instr->type != nir_instr_type_intrinsic) continue;
                 nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
                 if (in->intrinsic == nir_intrinsic_load_ubo) nUbo++;
+                else if (in->intrinsic == nir_intrinsic_load_ssbo) nSsbo++;
                 switch (in->intrinsic) {
                 case nir_intrinsic_load_ubo:
                 case nir_intrinsic_load_ssbo:
@@ -1572,8 +1577,19 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
                     want(in->src[1]);
                     break;
                 case nir_intrinsic_store_ssbo:
+                    if (nir_src_is_const(in->src[1])) {
+                        uint32_t b = uint32_t(nir_src_as_uint(in->src[1]));
+                        if (b < 32) writtenSsbo[b] = true;
+                    }
                     want(in->src[1]);
                     want(in->src[2]);
+                    break;
+                case nir_intrinsic_ssbo_atomic:
+                case nir_intrinsic_ssbo_atomic_swap:
+                    if (nir_src_is_const(in->src[0])) {
+                        uint32_t b = uint32_t(nir_src_as_uint(in->src[0]));
+                        if (b < 32) writtenSsbo[b] = true;
+                    }
                     break;
                 case nir_intrinsic_load_global:
                 case nir_intrinsic_load_scratch:
@@ -1589,8 +1605,9 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
             }
         }
     }
+    if (outIfs != nullptr) *outIfs = nIfs;
 
-    static constexpr size_t kMaxBytes = 256;
+    static constexpr size_t kMaxBytes = 1024;
     uint8_t masks[32][kMaxBytes]{};
     uint32_t maxEnd[32]{};
     uint32_t nCtrl[32]{};
@@ -1605,13 +1622,24 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
             nir_foreach_phi_src(ps, nir_instr_as_phi(parent)) want(ps->src);
         } else if (parent->type == nir_instr_type_intrinsic) {
             nir_intrinsic_instr* in = nir_instr_as_intrinsic(parent);
-            if (in->intrinsic != nir_intrinsic_load_ubo || !nir_src_is_const(in->src[0])) continue;
-            nUboHit++;
+            const bool isUbo = in->intrinsic == nir_intrinsic_load_ubo;
+            const bool isSsbo = in->intrinsic == nir_intrinsic_load_ssbo;
+            if ((!isUbo && !isSsbo) || !nir_src_is_const(in->src[0])) continue;
             const uint32_t b = uint32_t(nir_src_as_uint(in->src[0]));
-            if (b >= 32 || !nir_src_is_const(in->src[1])) continue;
+            if (b >= 32) continue;
+            if (isSsbo && writtenSsbo[b]) continue;
+            if (isUbo) nUboHit++; else nSsboHit++;
+            if (!nir_src_is_const(in->src[1])) {
+                nDynOff++;
+                continue;
+            }
             const uint64_t at = nir_src_as_uint(in->src[1]);
             const uint64_t n = uint64_t(in->def.num_components) * (in->def.bit_size / 8);
-            if (n == 0 || at + n > kMaxBytes) continue;
+            if (n == 0) continue;
+            if (at + n > kMaxBytes) {
+                nOverCap++;
+                continue;
+            }
             for (uint64_t i = at; i < at + n; i++) {
                 if (!masks[b][i]) {
                     masks[b][i] = 1;
@@ -1628,7 +1656,7 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
         if (nCtrl[b] == 0) continue;
         if (!sum.empty()) sum += " ";
         sum += "b" + std::to_string(b) + ":" + std::to_string(nCtrl[b]) + "/" + std::to_string(maxEnd[b]) + "B";
-        if (outBuffers->size() < 4) {
+        if (outBuffers->size() < 8) {
             UberBufferInfo ub;
             ub.binding = b;
             ub.length = maxEnd[b];
@@ -1637,10 +1665,12 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
         }
     }
     if (summary != nullptr) {
-        *summary = sum + " (ifs=" + std::to_string(nIfs) + " ubo=" + std::to_string(nUbo) + " hit=" + std::to_string(nUboHit) + ")";
+        *summary = sum + " (ifs=" + std::to_string(nIfs) + " ubo=" + std::to_string(nUbo) + "/" + std::to_string(nUboHit) +
+                   " ssbo=" + std::to_string(nSsbo) + "/" + std::to_string(nSsboHit) +
+                   " dyn=" + std::to_string(nDynOff) + " over=" + std::to_string(nOverCap) + ")";
     }
     if (outBuffers->empty()) {
-        std::string info = "no UBO control bytes (" + (summary ? *summary : "") + " res=" + std::to_string(t.info.num_resources) + ":";
+        std::string info = "no UBO/SSBO control bytes (" + (summary ? *summary : "") + " res=" + std::to_string(t.info.num_resources) + ":";
         for (unsigned i = 0; i < t.info.num_resources && i < 8; i++) {
             const air_resource& r = t.info.resources[i];
             info += " k" + std::to_string(int(r.kind)) + "i" + std::to_string(r.index) + "s" + std::to_string(r.size);

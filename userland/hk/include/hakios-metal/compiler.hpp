@@ -134,6 +134,7 @@ struct KnownBuffer {
     std::vector<uint8_t> bytes;
     std::vector<uint8_t> fold;
     std::vector<KnownBuffer> extra;
+    bool allowSsbo = false;
 };
 struct UberBufferInfo {
     uint32_t binding = 0;
@@ -150,7 +151,8 @@ std::unique_ptr<CompiledStage> compileStage(const void* bitcode, size_t size, st
 bool knownBufferControlBytes(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t binding, size_t length,
                              std::vector<uint8_t>* mask, std::string* why);
 bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionConstants& constants,
-                              std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why);
+                              std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why,
+                              uint32_t* outIfs = nullptr);
 bool functionConstantIndexMap(const void* bitcode, size_t size, std::vector<std::pair<std::string, uint32_t>>* out);
 // The name a stage compiled from these is filed under in the cache ("" with no cache configured): for the tests
 std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known);

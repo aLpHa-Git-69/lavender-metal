@@ -272,11 +272,23 @@ extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, co
     return 1;
 }
 
+extern "C" int lavcc_compile_vs(struct lavcc_lib* lv, const char* vname, const struct lavcc_fc* vfcs, uint32_t nvfcs,
+                                struct lav5_stage* vs, char* why, size_t whysize)
+{
+    std::string w;
+    auto v = stage_of(lv, vname, MetalFunction::kVertex, vfcs, nvfcs, &w);
+    if (!v) { snprintf(why, whysize, "vertex function: %s", w.c_str()); return 0; }
+    memset(vs, 0, sizeof *vs);
+    flatten_stage(v->stage, v->resources, vs);
+    return 1;
+}
+
 extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, const struct lavcc_fc* ffcs, uint32_t nffcs,
-                               struct lavcc_uber_buf* out_bufs, uint32_t* out_nbufs, char* summary, size_t sumsize,
-                               char* why, size_t whysize)
+                               struct lavcc_uber_buf* out_bufs, uint32_t* out_nbufs, uint32_t* out_ifs,
+                               char* summary, size_t sumsize, char* why, size_t whysize)
 {
     *out_nbufs = 0;
+    if (out_ifs) *out_ifs = 0;
     const MetalFunction* fn = lf->lib.find(fname);
     if (!fn || fn->type != MetalFunction::kFragment) {
         if (why && whysize) snprintf(why, whysize, "not a fragment function");
@@ -290,11 +302,14 @@ extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, const st
     }
     std::string sum, w;
     std::vector<UberBufferInfo> ubs;
-    if (!detectUberControlBuffers(bc, n, to_fcs(ffcs, nffcs), &ubs, &sum, &w)) {
+    uint32_t nifs = 0;
+    if (!detectUberControlBuffers(bc, n, to_fcs(ffcs, nffcs), &ubs, &sum, &w, &nifs)) {
+        if (out_ifs) *out_ifs = nifs;
         if (summary && sumsize) snprintf(summary, sumsize, "%s", sum.c_str());
         if (why && whysize) snprintf(why, whysize, "%s", w.c_str());
         return 0;
     }
+    if (out_ifs) *out_ifs = nifs;
     if (summary && sumsize) snprintf(summary, sumsize, "%s", sum.c_str());
     uint32_t nb = 0;
     for (const auto& ub : ubs) {
@@ -334,11 +349,13 @@ extern "C" int lavcc_compile_program_spec(struct lavcc_lib* lv, const char* vnam
         return 0;
     }
     KnownBuffer kb;
+    kb.allowSsbo = true;
     kb.binding = uvals[0].binding;
     kb.bytes.assign(uvals[0].bytes, uvals[0].bytes + uvals[0].len);
     if (uvals[0].fold != nullptr) kb.fold.assign(uvals[0].fold, uvals[0].fold + uvals[0].len);
     for (uint32_t i = 1; i < nuvals; i++) {
         KnownBuffer e;
+        e.allowSsbo = true;
         e.binding = uvals[i].binding;
         e.bytes.assign(uvals[i].bytes, uvals[i].bytes + uvals[i].len);
         if (uvals[i].fold != nullptr) e.fold.assign(uvals[i].fold, uvals[i].fold + uvals[i].len);

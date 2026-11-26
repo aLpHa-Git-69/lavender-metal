@@ -496,6 +496,7 @@ struct rpipe {
 	uint32_t stride[LAV5_MAX_BUFFERS];
 	id label;
 	/* uber-shader specialization on small constant buffers (e.g. CoreAnimation's FragmentShaderConfig) */
+	BOOL fs_deferred;
 	uint32_t spec_nbufs;
 	struct lavcc_uber_buf spec_bufs[LAVCC_MAX_UBER_BUFS];
 };
@@ -589,7 +590,7 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564334u
+#define PIPE_CACHE_MAGIC 0x4c564335u
 
 static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
@@ -787,25 +788,47 @@ makeRenderPipeline(id desc, NSError ** err)
 	pthread_mutex_lock(&gCCLock);
 	ok = pipeCacheLoad(vs, fs, rp);
 	if (!ok) {
-		ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String], vs->fcs, vs->nfcs,
-		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], fs->fcs, fs->nfcs,
-		    &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
-		if (ok && rp->fs.k.nwords >= 4096) {
-			uint32_t nb = 0;
+		const char * fname = [fs->name UTF8String];
+		BOOL deferred = NO;
+
+		if (strncmp(fname, "fixed_frag_", 11) == 0) {
+			uint32_t nb = 0, nifs = 0;
 			char sum[256] = "", uwhy[256] = "";
 
-			if (lavcc_uber_info(STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], fs->fcs, fs->nfcs,
-			    rp->spec_bufs, &nb, sum, sizeof(sum), uwhy, sizeof(uwhy)) && nb > 0) {
-				rp->spec_nbufs = nb;
-				lavlog("render pipeline %s + %s (fc %u+%u): uber-shader (%u fs words), ubos: %s",
-				    [vs->name UTF8String], [fs->name UTF8String], vs->nfcs, fs->nfcs, rp->fs.k.nwords, sum);
-			} else {
-				lavlog("render pipeline %s + %s (fc %u+%u): uber-shader (%u fs words), no UBO spec: %s",
-				    [vs->name UTF8String], [fs->name UTF8String], vs->nfcs, fs->nfcs, rp->fs.k.nwords, uwhy);
+			if (lavcc_uber_info(STATE(fs->library, struct libstate)->lib, fname, fs->fcs, fs->nfcs,
+			    rp->spec_bufs, &nb, &nifs, sum, sizeof(sum), uwhy, sizeof(uwhy)) && nifs >= 64 && nb > 0) {
+				ok = lavcc_compile_vs(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String], vs->fcs, vs->nfcs,
+				    &rp->vs, why, sizeof(why));
+				if (ok) {
+					rp->spec_nbufs = nb;
+					rp->fs_deferred = YES;
+					deferred = YES;
+					lavlog("render pipeline %s + %s (fc %u+%u): deferred uber-shader (vs %u words), ubos: %s",
+					    [vs->name UTF8String], fname, vs->nfcs, fs->nfcs, rp->vs.k.nwords, sum);
+				}
 			}
 		}
-		if (ok) {
-			pipeCacheStore(vs, fs, rp);
+		if (!deferred && !ok) {
+			ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String], vs->fcs, vs->nfcs,
+			    STATE(fs->library, struct libstate)->lib, fname, fs->fcs, fs->nfcs,
+			    &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
+			if (ok && rp->fs.k.nwords >= 4096) {
+				uint32_t nb = 0, nifs = 0;
+				char sum[256] = "", uwhy[256] = "";
+
+				if (lavcc_uber_info(STATE(fs->library, struct libstate)->lib, fname, fs->fcs, fs->nfcs,
+				    rp->spec_bufs, &nb, &nifs, sum, sizeof(sum), uwhy, sizeof(uwhy)) && nb > 0) {
+					rp->spec_nbufs = nb;
+					lavlog("render pipeline %s + %s (fc %u+%u): uber-shader (%u fs words), ubos: %s",
+					    [vs->name UTF8String], fname, vs->nfcs, fs->nfcs, rp->fs.k.nwords, sum);
+				} else {
+					lavlog("render pipeline %s + %s (fc %u+%u): uber-shader (%u fs words), no UBO spec: %s",
+					    [vs->name UTF8String], fname, vs->nfcs, fs->nfcs, rp->fs.k.nwords, uwhy);
+				}
+			}
+			if (ok) {
+				pipeCacheStore(vs, fs, rp);
+			}
 		}
 	}
 	pthread_mutex_unlock(&gCCLock);
@@ -847,7 +870,7 @@ makeRenderPipeline(id desc, NSError ** err)
 		lavlog("render pipeline: the vertex function has %u attributes, the descriptor gave %u", rp->vs.nattr, rp->nattr);
 		goto refuse;
 	}
-	if (!codeBuf(&rp->vcode, &rp->vs.k) || !codeBuf(&rp->fcode, &rp->fs.k)) {
+	if (!codeBuf(&rp->vcode, &rp->vs.k) || (!rp->fs_deferred && !codeBuf(&rp->fcode, &rp->fs.k))) {
 		lavError(err, @"MTLLibraryErrorDomain", "no memory for the code");
 		[o release];
 		return nil;
@@ -860,8 +883,8 @@ makeRenderPipeline(id desc, NSError ** err)
 	}
 	rp->vfn = [vf retain];
 	rp->ffn = [ff retain];
-	lavlog("render pipeline %s + %s: %u+%u words, %u attributes", [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords,
-	    rp->fs.k.nwords, rp->nattr);
+	lavlog("render pipeline %s + %s: %u+%u words%s, %u attributes", [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords,
+	    rp->fs.k.nwords, rp->fs_deferred ? " (deferred)" : "", rp->nattr);
 	return o;
 refuse:
 	lavError(err, @"MTLLibraryErrorDomain", "the render pipeline uses something this driver does not serve (see the log)");
@@ -1541,9 +1564,65 @@ runCopyTex(struct op * op)
 	return YES;
 }
 
+static BOOL
+pipeEnsureBaseLocked(struct rpipe * rp)
+{
+	struct fnstate * vs, * fs;
+	struct lav5_stage nvs, nfs;
+	struct lav5_link nlink;
+	struct lbuf vc = { 0 }, fc = { 0 };
+	char why[256] = "";
+	int ok;
+
+	if (!rp->fs_deferred) {
+		return YES;
+	}
+	vs = STATE(rp->vfn, struct fnstate);
+	fs = STATE(rp->ffn, struct fnstate);
+	memset(&nvs, 0, sizeof(nvs));
+	memset(&nfs, 0, sizeof(nfs));
+	memset(&nlink, 0, sizeof(nlink));
+	pthread_mutex_lock(&gCCLock);
+	ok = pipeCacheLoadSpec(vs, fs, NULL, 0, &nvs, &nfs, &nlink, rp->spec_bufs, &rp->spec_nbufs);
+	if (!ok) {
+		ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String], vs->fcs, vs->nfcs,
+		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], fs->fcs, fs->nfcs,
+		    &nvs, &nfs, &nlink, why, sizeof(why));
+		if (ok) {
+			pipeCacheStoreSpec(vs, fs, NULL, 0, &nvs, &nfs, &nlink, rp->spec_bufs, rp->spec_nbufs);
+		}
+	}
+	pthread_mutex_unlock(&gCCLock);
+	if (!ok) {
+		lavlog("deferred base compile %s + %s failed: %s", [vs->name UTF8String], [fs->name UTF8String], why);
+		return NO;
+	}
+	if (!codeBufLocked(&vc, &nvs.k) || !codeBufLocked(&fc, &nfs.k)) {
+		if (vc.handle != 0) lavBufFree(&vc);
+		if (fc.handle != 0) lavBufFree(&fc);
+		lavcc_stage_free(&nvs);
+		lavcc_stage_free(&nfs);
+		return NO;
+	}
+	if (rp->vcode.handle != 0) lavBufFree(&rp->vcode);
+	if (rp->fcode.handle != 0) lavBufFree(&rp->fcode);
+	lavcc_stage_free(&rp->vs);
+	lavcc_stage_free(&rp->fs);
+	rp->vs = nvs;
+	rp->fs = nfs;
+	rp->link = nlink;
+	rp->vcode = vc;
+	rp->fcode = fc;
+	rp->fs_deferred = NO;
+	lavlog("deferred base compiled %s + %s: %u+%u words", [vs->name UTF8String], [fs->name UTF8String],
+	    rp->vs.k.nwords, rp->fs.k.nwords);
+	return YES;
+}
+
 static struct rpipe_spec *
 pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 {
+	static uint32_t diagLog;
 	uint8_t keys[LAVCC_MAX_UBER_BUFS][LAVCC_UBER_BUF_CAP];
 	struct lavcc_uber_val uvals[LAVCC_MAX_UBER_BUFS];
 	uint32_t nuvals = 0;
@@ -1562,19 +1641,24 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	for (uint32_t k = 0; k < rp->spec_nbufs; k++) {
 		const struct lavcc_uber_buf * ub = &rp->spec_bufs[k];
 		const struct lav5_binding * b;
+		uint32_t clen;
 
 		if (ub->binding >= LAV5_MAX_BUFFERS || ub->len == 0 || ub->len > LAVCC_UBER_BUF_CAP) {
 			continue;
 		}
 		b = &fs_buf[ub->binding];
-		if (b->cpu == NULL || b->bytes < ub->len) {
+		if (b->cpu == NULL || b->bytes == 0) {
 			continue;
 		}
-		for (uint32_t i = 0; i < ub->len; i++) {
+		clen = ub->len;
+		if (b->bytes < clen) {
+			clen = (uint32_t)b->bytes;
+		}
+		for (uint32_t i = 0; i < clen; i++) {
 			keys[nuvals][i] = ub->mask[i] ? ((const uint8_t *)b->cpu)[i] : 0;
 		}
 		uvals[nuvals].binding = ub->binding;
-		uvals[nuvals].len = ub->len;
+		uvals[nuvals].len = clen;
 		uvals[nuvals].bytes = keys[nuvals];
 		uvals[nuvals].fold = ub->mask;
 		nuvals++;
@@ -1602,6 +1686,30 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	}
 	if (gSpecCount >= RPIPE_GLOBAL_SPECS) {
 		return NULL;
+	}
+	if (diagLog < 8) {
+		char binfo[220] = "", sinfo[160] = "";
+		size_t bp = 0, sp2 = 0;
+
+		for (uint32_t i = 0; i < LAV5_MAX_BUFFERS && bp + 20 < sizeof(binfo); i++) {
+			if (fs_buf[i].cpu != NULL) {
+				bp += (size_t)snprintf(binfo + bp, sizeof(binfo) - bp, "%sb%u:%lluB",
+				    bp ? " " : "", i, (unsigned long long)fs_buf[i].bytes);
+			}
+		}
+		for (uint32_t k = 0; k < nuvals && sp2 + 32 < sizeof(sinfo); k++) {
+			sp2 += (size_t)snprintf(sinfo + sp2, sizeof(sinfo) - sp2, "%sb%u:%uB[",
+			    sp2 ? " " : "", uvals[k].binding, uvals[k].len);
+			for (uint32_t j = 0; j < uvals[k].len && j < 8 && sp2 + 4 < sizeof(sinfo); j++) {
+				sp2 += (size_t)snprintf(sinfo + sp2, sizeof(sinfo) - sp2, "%02x", keys[k][j]);
+			}
+			if (sp2 + 2 < sizeof(sinfo)) {
+				sinfo[sp2++] = ']';
+				sinfo[sp2] = 0;
+			}
+		}
+		lavlog("spec try %s[%u]: bound=[%s] fold=[%s]", [fs->name UTF8String], gSpecCount, binfo, sinfo);
+		diagLog++;
 	}
 	memset(&svs, 0, sizeof(svs));
 	memset(&sfs, 0, sizeof(sfs));
@@ -1633,7 +1741,7 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	}
 	if (sfs.k.nwords >= 4096) {
 		sp->failed = YES;
-		lavlog("specialized %s[%u]: still %u words (was %u, %u bufs) -> rejected, using base",
+		lavlog("specialized %s[%u]: still %u words (base %u, %u bufs) -> rejected, using base",
 		    [fs->name UTF8String], gSpecCount - 1, sfs.k.nwords, rp->fs.k.nwords, nuvals);
 		lavcc_stage_free(&svs);
 		lavcc_stage_free(&sfs);
@@ -1652,7 +1760,7 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	sp->link = slink;
 	sp->vcode = vc;
 	sp->fcode = fc;
-	lavlog("specialized %s[%u]: %u+%u words (was %u, %u bufs)", [fs->name UTF8String], gSpecCount - 1,
+	lavlog("specialized %s[%u]: %u+%u words (base %u, %u bufs)", [fs->name UTF8String], gSpecCount - 1,
 	    sp->vs.k.nwords, sp->fs.k.nwords, rp->fs.k.nwords, nuvals);
 	return sp;
 }
@@ -1729,6 +1837,10 @@ runDraw(struct op * op)
 			r->vs_code = sp->vcode.gpu;
 			r->fs_code = sp->fcode.gpu;
 		} else {
+			if (rp->fs_deferred && !pipeEnsureBaseLocked(rp)) {
+				free(r);
+				return NO;
+			}
 			r->vs = &rp->vs;
 			r->fs = &rp->fs;
 			r->link = &rp->link;
