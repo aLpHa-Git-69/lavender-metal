@@ -381,6 +381,178 @@ bool doneTranslating(uint64_t key, Translation* t) {
     return true;
 }
 
+// Forward constant and entry-block SSA store_scratch -> load_scratch so that local structs initialized from
+// function constants (e.g. CoreAnimation's 120-byte fixed_frag config struct) fold into branches before ir3.
+bool foldConstantScratch(nir_shader* nir) {
+    if (nir->scratch_size == 0) return false;
+    static constexpr size_t kMaxScratch = 4096;
+    struct SsaStore {
+        uint32_t off;
+        uint8_t comps;
+        uint8_t bits;
+        uint8_t size;
+        nir_def* def;
+    };
+    auto applyStore = [](nir_intrinsic_instr* in, uint8_t bytes[kMaxScratch], uint8_t known[kMaxScratch], std::vector<SsaStore>& ssa) {
+        if (!nir_src_is_const(in->src[1])) {
+            memset(known, 0, kMaxScratch);
+            ssa.clear();
+            return;
+        }
+        const uint64_t off = nir_src_as_uint(in->src[1]);
+        const unsigned bits = nir_src_bit_size(in->src[0]);
+        const unsigned comps = nir_src_num_components(in->src[0]);
+        const unsigned wmask = nir_intrinsic_write_mask(in);
+        if (bits == 0 || (bits % 8) != 0 || bits > 64) {
+            memset(known, 0, kMaxScratch);
+            ssa.clear();
+            return;
+        }
+        const unsigned eb = bits / 8;
+        const uint64_t total = uint64_t(comps) * eb;
+        ssa.erase(std::remove_if(ssa.begin(), ssa.end(), [&](const SsaStore& s) {
+            return !(uint64_t(s.off) + s.size <= off || off + total <= s.off);
+        }), ssa.end());
+        if (in->src[0].ssa->parent_instr->type == nir_instr_type_load_const) {
+            nir_load_const_instr* lc = nir_instr_as_load_const(in->src[0].ssa->parent_instr);
+            for (unsigned c = 0; c < comps; c++) {
+                if ((wmask & (1u << c)) == 0) continue;
+                const uint64_t v = nir_const_value_as_uint(lc->value[c], bits);
+                for (unsigned j = 0; j < eb; j++) {
+                    const uint64_t idx = off + uint64_t(c) * eb + j;
+                    if (idx < kMaxScratch) {
+                        bytes[idx] = uint8_t((v >> (j * 8)) & 0xffu);
+                        known[idx] = 1;
+                    }
+                }
+            }
+        } else {
+            for (unsigned c = 0; c < comps; c++) {
+                if ((wmask & (1u << c)) == 0) continue;
+                for (unsigned j = 0; j < eb; j++) {
+                    const uint64_t idx = off + uint64_t(c) * eb + j;
+                    if (idx < kMaxScratch) known[idx] = 0;
+                }
+            }
+            if (comps <= 4 && wmask == ((1u << comps) - 1u) && total > 0 && total <= 32 && off + total <= kMaxScratch && ssa.size() < 256) {
+                ssa.push_back(SsaStore{uint32_t(off), uint8_t(comps), uint8_t(bits), uint8_t(total), in->src[0].ssa});
+            }
+        }
+    };
+    auto tryFoldLoad = [](nir_builder* b, nir_intrinsic_instr* in, const uint8_t bytes[kMaxScratch], const uint8_t known[kMaxScratch],
+                          const std::vector<SsaStore>& ssa) -> bool {
+        if (!nir_src_is_const(in->src[0])) return false;
+        const uint64_t off = nir_src_as_uint(in->src[0]);
+        const unsigned bits = in->def.bit_size, comps = in->def.num_components;
+        if (bits == 0 || (bits % 8) != 0 || bits > 64 || comps == 0 || comps > NIR_MAX_VEC_COMPONENTS) return false;
+        const unsigned eb = bits / 8;
+        const uint64_t total = uint64_t(comps) * eb;
+        if (off + total > kMaxScratch) return false;
+        bool allConst = true;
+        for (uint64_t i = off; i < off + total; i++) {
+            if (!known[i]) { allConst = false; break; }
+        }
+        if (allConst) {
+            nir_const_value vals[NIR_MAX_VEC_COMPONENTS];
+            for (unsigned c = 0; c < comps; c++) {
+                uint64_t v = 0;
+                memcpy(&v, bytes + off + c * eb, eb);
+                vals[c] = nir_const_value_for_raw_uint(v, bits);
+            }
+            b->cursor = nir_before_instr(&in->instr);
+            nir_def_replace(&in->def, nir_build_imm(b, comps, bits, vals));
+            return true;
+        }
+        for (const SsaStore& s : ssa) {
+            if (s.off == off && s.comps == comps && s.bits == bits) {
+                nir_def_rewrite_uses(&in->def, s.def);
+                nir_instr_remove(&in->instr);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    bool anyProgress = false;
+    nir_foreach_function_impl(impl, nir) {
+        nir_block* entry = nir_start_block(impl);
+        bool hasDynStore = false;
+        uint8_t nonEntryWritten[kMaxScratch]{};
+        nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
+                if (in->intrinsic != nir_intrinsic_store_scratch) continue;
+                if (!nir_src_is_const(in->src[1])) {
+                    hasDynStore = true;
+                    break;
+                }
+                if (block != entry) {
+                    const uint64_t off = nir_src_as_uint(in->src[1]);
+                    const unsigned bits = nir_src_bit_size(in->src[0]);
+                    const unsigned comps = nir_src_num_components(in->src[0]);
+                    const unsigned eb = (bits + 7) / 8;
+                    const uint64_t end = std::min<uint64_t>(off + uint64_t(comps) * eb, kMaxScratch);
+                    for (uint64_t i = off; i < end; i++) nonEntryWritten[i] = 1;
+                }
+            }
+            if (hasDynStore) break;
+        }
+
+        nir_builder b = nir_builder_create(impl);
+        bool implProgress = false;
+        uint8_t entryBytes[kMaxScratch]{};
+        uint8_t entryKnown[kMaxScratch]{};
+        std::vector<SsaStore> entrySsa;
+        nir_foreach_instr_safe(instr, entry) {
+            if (instr->type != nir_instr_type_intrinsic) continue;
+            nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
+            if (in->intrinsic == nir_intrinsic_store_scratch) {
+                applyStore(in, entryBytes, entryKnown, entrySsa);
+            } else if (in->intrinsic == nir_intrinsic_load_scratch) {
+                if (tryFoldLoad(&b, in, entryBytes, entryKnown, entrySsa)) implProgress = true;
+            }
+        }
+        if (hasDynStore) {
+            memset(entryKnown, 0, sizeof(entryKnown));
+            entrySsa.clear();
+        } else {
+            for (size_t i = 0; i < kMaxScratch; i++) {
+                if (nonEntryWritten[i]) entryKnown[i] = 0;
+            }
+            entrySsa.erase(std::remove_if(entrySsa.begin(), entrySsa.end(), [&](const SsaStore& s) {
+                for (uint32_t i = s.off; i < s.off + s.size && i < kMaxScratch; i++) {
+                    if (nonEntryWritten[i]) return true;
+                }
+                return false;
+            }), entrySsa.end());
+        }
+
+        nir_foreach_block(block, impl) {
+            if (block == entry) continue;
+            uint8_t bytes[kMaxScratch];
+            uint8_t known[kMaxScratch];
+            memcpy(bytes, entryBytes, kMaxScratch);
+            memcpy(known, entryKnown, kMaxScratch);
+            std::vector<SsaStore> ssa = entrySsa;
+            nir_foreach_instr_safe(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
+                if (in->intrinsic == nir_intrinsic_store_scratch) {
+                    applyStore(in, bytes, known, ssa);
+                } else if (in->intrinsic == nir_intrinsic_load_scratch) {
+                    if (tryFoldLoad(&b, in, bytes, known, ssa)) implProgress = true;
+                }
+            }
+        }
+        if (implProgress) {
+            nir_metadata_preserve(impl, nir_metadata_control_flow);
+            anyProgress = true;
+        }
+    }
+    return anyProgress;
+}
+
 // store_scratch with no load_scratch anywhere: written and never read, taken away with the scratch size
 bool dropUnreadScratch(nir_shader* nir) {
     bool reads = false;
@@ -473,29 +645,27 @@ bool translate(const void* bitcode, size_t size, Translation& t, std::string* wh
         }
     }
     const bool hasKnownBytes = known != nullptr && (!known->bytes.empty() || !known->extra.empty());
-    if (hasKnownBytes) {
+    if (hasKnownBytes || t.nir->scratch_size > 0 || known != nullptr) {
         const bool earlyDce = getenv("HAKIOS_METAL_NO_EARLY_DCE") == nullptr;
         for (int iter = 0; iter < 64; iter++) {
             nir_copy_prop(t.nir);
             bool progress = nir_opt_constant_folding(t.nir);
-            progress = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || progress;
+            if (t.nir->scratch_size > 0) {
+                progress = foldConstantScratch(t.nir) || progress;
+            }
+            if (hasKnownBytes) {
+                progress = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || progress;
+            }
             if (earlyDce) {
                 progress = nir_opt_dead_cf(t.nir) || progress;
                 progress = nir_opt_dce(t.nir) || progress;
-                progress = nir_opt_algebraic(t.nir) || progress;
+                if (hasKnownBytes || t.nir->scratch_size > 0) {
+                    progress = nir_opt_algebraic(t.nir) || progress;
+                }
             }
             if (!progress) break;
         }
         if (earlyDce) dropUnreadScratch(t.nir);
-    } else if (known != nullptr && getenv("HAKIOS_METAL_NO_EARLY_DCE") == nullptr) {
-        for (int iter = 0; iter < 16; iter++) {
-            nir_copy_prop(t.nir);
-            bool progress = nir_opt_constant_folding(t.nir);
-            progress = nir_opt_dead_cf(t.nir) || progress;
-            progress = nir_opt_dce(t.nir) || progress;
-            if (!progress) break;
-        }
-        dropUnreadScratch(t.nir);
     }
     phase("the known buffer folded");
     return true;

@@ -590,7 +590,7 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564335u
+#define PIPE_CACHE_MAGIC 0x4c564336u
 
 static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
@@ -1638,6 +1638,7 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	if (rp->spec_nbufs == 0 || rp->spec_nbufs > LAVCC_MAX_UBER_BUFS) {
 		return NULL;
 	}
+	uint32_t nbound = 0;
 	for (uint32_t k = 0; k < rp->spec_nbufs; k++) {
 		const struct lavcc_uber_buf * ub = &rp->spec_bufs[k];
 		const struct lav5_binding * b;
@@ -1647,15 +1648,19 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 			continue;
 		}
 		b = &fs_buf[ub->binding];
-		if (b->cpu == NULL || b->bytes == 0) {
-			continue;
-		}
-		clen = ub->len;
-		if (b->bytes < clen) {
-			clen = (uint32_t)b->bytes;
-		}
-		for (uint32_t i = 0; i < clen; i++) {
-			keys[nuvals][i] = ub->mask[i] ? ((const uint8_t *)b->cpu)[i] : 0;
+		if (b->cpu != NULL && b->bytes > 0) {
+			clen = ub->len;
+			if (b->bytes < clen) {
+				clen = (uint32_t)b->bytes;
+			}
+			for (uint32_t i = 0; i < clen; i++) {
+				keys[nuvals][i] = ub->mask[i] ? ((const uint8_t *)b->cpu)[i] : 0;
+			}
+			nbound++;
+		} else {
+			/* Unbound UBO reads zeros from hole_gpu on the GPU; fold as zero so dead branches collapse. */
+			clen = ub->len;
+			memset(keys[nuvals], 0, clen);
 		}
 		uvals[nuvals].binding = ub->binding;
 		uvals[nuvals].len = clen;
@@ -1663,7 +1668,7 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 		uvals[nuvals].fold = ub->mask;
 		nuvals++;
 	}
-	if (nuvals == 0) {
+	if (nuvals == 0 || nbound == 0) {
 		return NULL;
 	}
 	vs = STATE(rp->vfn, struct fnstate);
