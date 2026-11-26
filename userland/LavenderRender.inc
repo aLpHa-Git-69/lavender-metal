@@ -468,14 +468,15 @@ texReplaceSlice(id self, SEL cmd, LavRegion r, uint64_t level, __unused uint64_t
 
 /* ---- the render pipeline state ---- */
 
-#define RPIPE_SPEC_KEY_MAX 512u
 #define RPIPE_GLOBAL_SPECS 128u
 
 struct rpipe_spec {
 	uint64_t hash;
-	int binding;
-	uint32_t len;
-	uint8_t key[RPIPE_SPEC_KEY_MAX];
+	uint32_t nbufs;
+	uint32_t bindings[LAVCC_MAX_UBER_BUFS];
+	uint32_t lens[LAVCC_MAX_UBER_BUFS];
+	uint8_t keys[LAVCC_MAX_UBER_BUFS][LAVCC_UBER_BUF_CAP];
+	BOOL failed;
 	struct lav5_stage vs, fs;
 	struct lav5_link link;
 	struct lbuf vcode, fcode;
@@ -494,10 +495,9 @@ struct rpipe {
 	struct lav5_attr attr[16];
 	uint32_t stride[LAV5_MAX_BUFFERS];
 	id label;
-	/* uber-shader specialization on a small constant buffer (e.g. CoreAnimation's FragmentShaderConfig) */
-	int spec_binding;
-	uint32_t spec_len;
-	uint8_t spec_mask[RPIPE_SPEC_KEY_MAX];
+	/* uber-shader specialization on small constant buffers (e.g. CoreAnimation's FragmentShaderConfig) */
+	uint32_t spec_nbufs;
+	struct lavcc_uber_buf spec_bufs[LAVCC_MAX_UBER_BUFS];
 };
 
 static BOOL
@@ -589,10 +589,10 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564333u
+#define PIPE_CACHE_MAGIC 0x4c564334u
 
 static uint64_t
-pipeKeyHash(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen)
+pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
 {
 	uint64_t h = 0xcbf29ce484222325ull;
 	const char * stamp = __DATE__ __TIME__;
@@ -602,27 +602,34 @@ pipeKeyHash(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t
 	h = lavHash64(h, &STATE(fs->library, struct libstate)->hash, 8);
 	h = lavHash64(h, [vs->name UTF8String], strlen([vs->name UTF8String]) + 1);
 	h = lavHash64(h, [fs->name UTF8String], strlen([fs->name UTF8String]) + 1);
-	if (binding >= 0 && key != NULL && keylen > 0) {
-		uint32_t b = (uint32_t)binding;
-		h = lavHash64(h, &b, sizeof(b));
-		h = lavHash64(h, key, keylen);
+	h = lavHash64(h, &vs->nfcs, sizeof(vs->nfcs));
+	if (vs->nfcs > 0 && vs->fcs != NULL) {
+		h = lavHash64(h, vs->fcs, vs->nfcs * sizeof(*vs->fcs));
+	}
+	h = lavHash64(h, &fs->nfcs, sizeof(fs->nfcs));
+	if (fs->nfcs > 0 && fs->fcs != NULL) {
+		h = lavHash64(h, fs->fcs, fs->nfcs * sizeof(*fs->fcs));
+	}
+	if (uvals != NULL && nuvals > 0) {
+		h = lavHash64(h, &nuvals, sizeof(nuvals));
+		for (uint32_t i = 0; i < nuvals; i++) {
+			h = lavHash64(h, &uvals[i].binding, sizeof(uvals[i].binding));
+			h = lavHash64(h, &uvals[i].len, sizeof(uvals[i].len));
+			if (uvals[i].bytes != NULL && uvals[i].len > 0) {
+				h = lavHash64(h, uvals[i].bytes, uvals[i].len);
+			}
+		}
 	}
 	return h;
 }
 
 static void
-pipeCachePathSpec(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen,
+pipeCachePathSpec(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals,
     char * path, size_t n)
 {
-	uint64_t h = pipeKeyHash(vs, fs, binding, key, keylen);
+	uint64_t h = pipeKeyHash(vs, fs, uvals, nuvals);
 
 	snprintf(path, n, PIPE_CACHE_DIR "/%016llx.pipe", (unsigned long long)h);
-}
-
-static void
-pipeCachePath(struct fnstate * vs, struct fnstate * fs, char * path, size_t n)
-{
-	pipeCachePathSpec(vs, fs, -1, NULL, 0, path, n);
 }
 
 static BOOL
@@ -652,30 +659,27 @@ pipeReadStage(FILE * f, struct lav5_stage * st)
 }
 
 static BOOL
-pipeCacheLoadSpec(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen,
+pipeCacheLoadSpec(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals,
     struct lav5_stage * out_vs, struct lav5_stage * out_fs, struct lav5_link * out_link,
-    int * out_sb, uint32_t * out_slen, uint8_t * out_mask)
+    struct lavcc_uber_buf * out_ubufs, uint32_t * out_nubufs)
 {
 	char path[160];
-	uint32_t magic = 0;
-	int32_t sb = -1;
-	uint32_t slen = 0;
+	uint32_t magic = 0, nb = 0;
 	FILE * f;
 	BOOL ok;
 
-	pipeCachePathSpec(vs, fs, binding, key, keylen, path, sizeof(path));
+	pipeCachePathSpec(vs, fs, uvals, nuvals, path, sizeof(path));
 	f = fopen(path, "rb");
 	if (f == NULL) {
 		return NO;
 	}
 	ok = fread(&magic, 4, 1, f) == 1 && magic == PIPE_CACHE_MAGIC && fread(out_link, sizeof(*out_link), 1, f) == 1 &&
 	    pipeReadStage(f, out_vs) && pipeReadStage(f, out_fs);
-	if (ok && binding < 0) {
-		ok = fread(&sb, sizeof(sb), 1, f) == 1 && fread(&slen, sizeof(slen), 1, f) == 1 &&
-		    slen <= RPIPE_SPEC_KEY_MAX && (slen == 0 || (out_mask != NULL && fread(out_mask, 1, slen, f) == slen));
-		if (ok && out_sb != NULL && out_slen != NULL) {
-			*out_sb = (int)sb;
-			*out_slen = slen;
+	if (ok && nuvals == 0) {
+		ok = fread(&nb, sizeof(nb), 1, f) == 1 && nb <= LAVCC_MAX_UBER_BUFS &&
+		    (nb == 0 || (out_ubufs != NULL && fread(out_ubufs, sizeof(*out_ubufs), nb, f) == nb));
+		if (ok && out_nubufs != NULL) {
+			*out_nubufs = nb;
 		}
 	}
 	fclose(f);
@@ -686,8 +690,9 @@ pipeCacheLoadSpec(struct fnstate * vs, struct fnstate * fs, int binding, const u
 		memset(out_fs, 0, sizeof(*out_fs));
 		return NO;
 	}
-	if (binding < 0) {
-		lavlog("pipeline cache: %s + %s (spec buf %d len %u)", [vs->name UTF8String], [fs->name UTF8String], sb, slen);
+	if (nuvals == 0) {
+		lavlog("pipeline cache: %s + %s (fc %u+%u, spec bufs %u)", [vs->name UTF8String], [fs->name UTF8String],
+		    vs->nfcs, fs->nfcs, nb);
 	}
 	return YES;
 }
@@ -695,8 +700,7 @@ pipeCacheLoadSpec(struct fnstate * vs, struct fnstate * fs, int binding, const u
 static BOOL
 pipeCacheLoad(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
 {
-	return pipeCacheLoadSpec(vs, fs, -1, NULL, 0, &rp->vs, &rp->fs, &rp->link,
-	    &rp->spec_binding, &rp->spec_len, rp->spec_mask);
+	return pipeCacheLoadSpec(vs, fs, NULL, 0, &rp->vs, &rp->fs, &rp->link, rp->spec_bufs, &rp->spec_nbufs);
 }
 
 static void
@@ -714,9 +718,9 @@ pipeWriteStage(FILE * f, const struct lav5_stage * st)
 }
 
 static void
-pipeCacheStoreSpec(struct fnstate * vs, struct fnstate * fs, int binding, const uint8_t * key, uint32_t keylen,
+pipeCacheStoreSpec(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals,
     const struct lav5_stage * st_vs, const struct lav5_stage * st_fs, const struct lav5_link * st_link,
-    int sb, uint32_t slen, const uint8_t * mask)
+    const struct lavcc_uber_buf * ubufs, uint32_t nubufs)
 {
 	char path[160], tmp[176];
 	uint32_t magic = PIPE_CACHE_MAGIC;
@@ -724,7 +728,7 @@ pipeCacheStoreSpec(struct fnstate * vs, struct fnstate * fs, int binding, const 
 
 	mkdir(PIPE_CACHE_DIR, 01777);
 	chmod(PIPE_CACHE_DIR, 01777);
-	pipeCachePathSpec(vs, fs, binding, key, keylen, path, sizeof(path));
+	pipeCachePathSpec(vs, fs, uvals, nuvals, path, sizeof(path));
 	snprintf(tmp, sizeof(tmp), "%s.%d", path, (int)getpid());
 	f = fopen(tmp, "wb");
 	if (f == NULL) {
@@ -734,12 +738,10 @@ pipeCacheStoreSpec(struct fnstate * vs, struct fnstate * fs, int binding, const 
 	fwrite(st_link, sizeof(*st_link), 1, f);
 	pipeWriteStage(f, st_vs);
 	pipeWriteStage(f, st_fs);
-	if (binding < 0) {
-		int32_t sb32 = (int32_t)sb;
-		fwrite(&sb32, sizeof(sb32), 1, f);
-		fwrite(&slen, sizeof(slen), 1, f);
-		if (slen > 0 && mask != NULL) {
-			fwrite(mask, 1, slen, f);
+	if (nuvals == 0) {
+		fwrite(&nubufs, sizeof(nubufs), 1, f);
+		if (nubufs > 0 && ubufs != NULL) {
+			fwrite(ubufs, sizeof(*ubufs), nubufs, f);
 		}
 	}
 	if (fclose(f) == 0) {
@@ -752,8 +754,7 @@ pipeCacheStoreSpec(struct fnstate * vs, struct fnstate * fs, int binding, const 
 static void
 pipeCacheStore(struct fnstate * vs, struct fnstate * fs, struct rpipe * rp)
 {
-	pipeCacheStoreSpec(vs, fs, -1, NULL, 0, &rp->vs, &rp->fs, &rp->link,
-	    rp->spec_binding, rp->spec_len, rp->spec_mask);
+	pipeCacheStoreSpec(vs, fs, NULL, 0, &rp->vs, &rp->fs, &rp->link, rp->spec_bufs, rp->spec_nbufs);
 }
 
 static id
@@ -783,27 +784,24 @@ makeRenderPipeline(id desc, NSError ** err)
 	}
 	rp = STATE(o, struct rpipe);
 	memset(rp, 0, sizeof(*rp));
-	rp->spec_binding = -1;
 	pthread_mutex_lock(&gCCLock);
 	ok = pipeCacheLoad(vs, fs, rp);
 	if (!ok) {
-		ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String],
-		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
+		ok = lavcc_compile_program(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String], vs->fcs, vs->nfcs,
+		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], fs->fcs, fs->nfcs,
+		    &rp->vs, &rp->fs, &rp->link, why, sizeof(why));
 		if (ok && rp->fs.k.nwords >= 4096) {
-			int sb = -1;
-			uint32_t slen = 0;
-			char uwhy[256] = "";
+			uint32_t nb = 0;
+			char sum[256] = "", uwhy[256] = "";
 
-			if (lavcc_uber_info(STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], &sb, &slen,
-			    rp->spec_mask, sizeof(rp->spec_mask), uwhy, sizeof(uwhy)) &&
-			    sb >= 0 && sb < LAV5_MAX_BUFFERS && slen > 0 && slen <= RPIPE_SPEC_KEY_MAX) {
-				rp->spec_binding = sb;
-				rp->spec_len = slen;
-				lavlog("render pipeline %s + %s: uber-shader (%u fs words), will specialize on fs buffer %d (%u bytes)",
-				    [vs->name UTF8String], [fs->name UTF8String], rp->fs.k.nwords, sb, slen);
+			if (lavcc_uber_info(STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], fs->fcs, fs->nfcs,
+			    rp->spec_bufs, &nb, sum, sizeof(sum), uwhy, sizeof(uwhy)) && nb > 0) {
+				rp->spec_nbufs = nb;
+				lavlog("render pipeline %s + %s (fc %u+%u): uber-shader (%u fs words), ubos: %s",
+				    [vs->name UTF8String], [fs->name UTF8String], vs->nfcs, fs->nfcs, rp->fs.k.nwords, sum);
 			} else {
-				lavlog("render pipeline %s + %s: uber-shader (%u fs words), no specialization: %s",
-				    [vs->name UTF8String], [fs->name UTF8String], rp->fs.k.nwords, uwhy);
+				lavlog("render pipeline %s + %s (fc %u+%u): uber-shader (%u fs words), no UBO spec: %s",
+				    [vs->name UTF8String], [fs->name UTF8String], vs->nfcs, fs->nfcs, rp->fs.k.nwords, uwhy);
 			}
 		}
 		if (ok) {
@@ -1546,8 +1544,9 @@ runCopyTex(struct op * op)
 static struct rpipe_spec *
 pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 {
-	uint8_t key[RPIPE_SPEC_KEY_MAX];
-	const struct lav5_binding * b;
+	uint8_t keys[LAVCC_MAX_UBER_BUFS][LAVCC_UBER_BUF_CAP];
+	struct lavcc_uber_val uvals[LAVCC_MAX_UBER_BUFS];
+	uint32_t nuvals = 0;
 	struct fnstate * vs, * fs;
 	struct lav5_stage svs, sfs;
 	struct lav5_link slink;
@@ -1557,23 +1556,48 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	char why[256] = "";
 	int ok;
 
-	if (rp->spec_binding < 0 || rp->spec_binding >= LAV5_MAX_BUFFERS || rp->spec_len == 0 || rp->spec_len > RPIPE_SPEC_KEY_MAX) {
+	if (rp->spec_nbufs == 0 || rp->spec_nbufs > LAVCC_MAX_UBER_BUFS) {
 		return NULL;
 	}
-	b = &fs_buf[rp->spec_binding];
-	if (b->cpu == NULL || b->bytes < rp->spec_len) {
-		return NULL;
+	for (uint32_t k = 0; k < rp->spec_nbufs; k++) {
+		const struct lavcc_uber_buf * ub = &rp->spec_bufs[k];
+		const struct lav5_binding * b;
+
+		if (ub->binding >= LAV5_MAX_BUFFERS || ub->len == 0 || ub->len > LAVCC_UBER_BUF_CAP) {
+			continue;
+		}
+		b = &fs_buf[ub->binding];
+		if (b->cpu == NULL || b->bytes < ub->len) {
+			continue;
+		}
+		for (uint32_t i = 0; i < ub->len; i++) {
+			keys[nuvals][i] = ub->mask[i] ? ((const uint8_t *)b->cpu)[i] : 0;
+		}
+		uvals[nuvals].binding = ub->binding;
+		uvals[nuvals].len = ub->len;
+		uvals[nuvals].bytes = keys[nuvals];
+		uvals[nuvals].fold = ub->mask;
+		nuvals++;
 	}
-	for (uint32_t i = 0; i < rp->spec_len; i++) {
-		key[i] = rp->spec_mask[i] ? ((const uint8_t *)b->cpu)[i] : 0;
+	if (nuvals == 0) {
+		return NULL;
 	}
 	vs = STATE(rp->vfn, struct fnstate);
 	fs = STATE(rp->ffn, struct fnstate);
-	h = pipeKeyHash(vs, fs, rp->spec_binding, key, rp->spec_len);
+	h = pipeKeyHash(vs, fs, uvals, nuvals);
 	for (uint32_t i = 0; i < gSpecCount; i++) {
-		if (gSpecCache[i].hash == h && gSpecCache[i].binding == rp->spec_binding &&
-		    gSpecCache[i].len == rp->spec_len && memcmp(gSpecCache[i].key, key, rp->spec_len) == 0) {
-			return &gSpecCache[i];
+		if (gSpecCache[i].hash == h && gSpecCache[i].nbufs == nuvals) {
+			BOOL match = YES;
+			for (uint32_t k = 0; k < nuvals; k++) {
+				if (gSpecCache[i].bindings[k] != uvals[k].binding || gSpecCache[i].lens[k] != uvals[k].len ||
+				    memcmp(gSpecCache[i].keys[k], keys[k], uvals[k].len) != 0) {
+					match = NO;
+					break;
+				}
+			}
+			if (match) {
+				return gSpecCache[i].failed ? NULL : &gSpecCache[i];
+			}
 		}
 	}
 	if (gSpecCount >= RPIPE_GLOBAL_SPECS) {
@@ -1583,19 +1607,36 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 	memset(&sfs, 0, sizeof(sfs));
 	memset(&slink, 0, sizeof(slink));
 	pthread_mutex_lock(&gCCLock);
-	ok = pipeCacheLoadSpec(vs, fs, rp->spec_binding, key, rp->spec_len, &svs, &sfs, &slink, NULL, NULL, NULL);
+	ok = pipeCacheLoadSpec(vs, fs, uvals, nuvals, &svs, &sfs, &slink, NULL, NULL);
 	if (!ok) {
-		ok = lavcc_compile_program_spec(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String],
-		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String],
-		    (uint32_t)rp->spec_binding, key, rp->spec_mask, rp->spec_len,
-		    &svs, &sfs, &slink, why, sizeof(why));
+		ok = lavcc_compile_program_spec(STATE(vs->library, struct libstate)->lib, [vs->name UTF8String], vs->fcs, vs->nfcs,
+		    STATE(fs->library, struct libstate)->lib, [fs->name UTF8String], fs->fcs, fs->nfcs,
+		    uvals, nuvals, &svs, &sfs, &slink, why, sizeof(why));
 		if (ok) {
-			pipeCacheStoreSpec(vs, fs, rp->spec_binding, key, rp->spec_len, &svs, &sfs, &slink, -1, 0, NULL);
+			pipeCacheStoreSpec(vs, fs, uvals, nuvals, &svs, &sfs, &slink, NULL, 0);
 		}
 	}
 	pthread_mutex_unlock(&gCCLock);
+	sp = &gSpecCache[gSpecCount++];
+	memset(sp, 0, sizeof(*sp));
+	sp->hash = h;
+	sp->nbufs = nuvals;
+	for (uint32_t k = 0; k < nuvals; k++) {
+		sp->bindings[k] = uvals[k].binding;
+		sp->lens[k] = uvals[k].len;
+		memcpy(sp->keys[k], keys[k], uvals[k].len);
+	}
 	if (!ok) {
+		sp->failed = YES;
 		lavlog("specialize %s + %s failed: %s", [vs->name UTF8String], [fs->name UTF8String], why);
+		return NULL;
+	}
+	if (sfs.k.nwords >= 4096) {
+		sp->failed = YES;
+		lavlog("specialized %s[%u]: still %u words (was %u, %u bufs) -> rejected, using base",
+		    [fs->name UTF8String], gSpecCount - 1, sfs.k.nwords, rp->fs.k.nwords, nuvals);
+		lavcc_stage_free(&svs);
+		lavcc_stage_free(&sfs);
 		return NULL;
 	}
 	if (!codeBufLocked(&vc, &svs.k) || !codeBufLocked(&fc, &sfs.k)) {
@@ -1603,21 +1644,16 @@ pipeSelectSpec(struct rpipe * rp, const struct lav5_binding * fs_buf)
 		if (fc.handle != 0) lavBufFree(&fc);
 		lavcc_stage_free(&svs);
 		lavcc_stage_free(&sfs);
+		sp->failed = YES;
 		return NULL;
 	}
-	sp = &gSpecCache[gSpecCount++];
-	memset(sp, 0, sizeof(*sp));
-	sp->hash = h;
-	sp->binding = rp->spec_binding;
-	sp->len = rp->spec_len;
-	memcpy(sp->key, key, rp->spec_len);
 	sp->vs = svs;
 	sp->fs = sfs;
 	sp->link = slink;
 	sp->vcode = vc;
 	sp->fcode = fc;
-	lavlog("specialized %s[%u]: %u+%u words (was %u)", [fs->name UTF8String], gSpecCount - 1,
-	    sp->vs.k.nwords, sp->fs.k.nwords, rp->fs.k.nwords);
+	lavlog("specialized %s[%u]: %u+%u words (was %u, %u bufs)", [fs->name UTF8String], gSpecCount - 1,
+	    sp->vs.k.nwords, sp->fs.k.nwords, rp->fs.k.nwords, nuvals);
 	return sp;
 }
 
@@ -1792,7 +1828,9 @@ runDraw(struct op * op)
 	}
 	ok = lavSubmit(w, n);
 	if (!ok) {
-		lavlog("draw: %u vertices x %u instances, prim %u, %zu words, FAILED", d->count, d->instances, d->prim, n);
+		lavlog("draw %s+%s (fs %u words, rt %ux%u fmt %u): %u vertices x %u instances, prim %u, %zu words, FAILED",
+		    [STATE(rp->vfn, struct fnstate)->name UTF8String], [STATE(rp->ffn, struct fnstate)->name UTF8String],
+		    r->fs->k.nwords, r->rt_width, r->rt_height, t->format, d->count, d->instances, d->prim, n);
 	} else {
 		lavdbg("draw: %u vertices x %u instances, prim %u, %zu words, done", d->count, d->instances, d->prim, n);
 	}

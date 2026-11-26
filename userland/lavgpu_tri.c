@@ -255,7 +255,7 @@ main(int argc, char ** argv)
 		printf("library: %s\n", why);
 		return 1;
 	}
-	if (!lavcc_compile_program(lib, "tri_vs", lib, "tri_fs", &vs, &fs, &link, why, sizeof(why))) {
+	if (!lavcc_compile_program(lib, "tri_vs", NULL, 0, lib, "tri_fs", NULL, 0, &vs, &fs, &link, why, sizeof(why))) {
 		printf("tri_vs + tri_fs: the compiler refused: %s\n", why);
 		return 1;
 	}
@@ -264,7 +264,7 @@ main(int argc, char ** argv)
 	    link.max_loc);
 	total++;
 	passed += draw("draw 1: tri_vs (vertex id), tri_fs", &vs, &fs, &link, 0);
-	if (lavcc_compile_program(lib, "attr_vs", lib, "tri_fs", &avs, &fs, &alink, why, sizeof(why))) {
+	if (lavcc_compile_program(lib, "attr_vs", NULL, 0, lib, "tri_fs", NULL, 0, &avs, &fs, &alink, why, sizeof(why))) {
 		printf("attr_vs: %u words, %u attributes\n", avs.k.nwords, avs.nattr);
 		total++;
 		passed += draw("draw 2: attr_vs (a vertex buffer), tri_fs", &avs, &fs, &alink, 1);

@@ -133,6 +133,12 @@ struct KnownBuffer {
     uint32_t binding = 0;
     std::vector<uint8_t> bytes;
     std::vector<uint8_t> fold;
+    std::vector<KnownBuffer> extra;
+};
+struct UberBufferInfo {
+    uint32_t binding = 0;
+    uint32_t length = 0;
+    std::vector<uint8_t> mask;
 };
 std::unique_ptr<CompiledStage> compileStage(const void* bitcode, size_t size, std::string* why, const FunctionConstants& constants = {},
                                            uint32_t iboBase = 0, const KnownBuffer* known = nullptr);
@@ -143,9 +149,8 @@ std::unique_ptr<CompiledStage> compileStage(const void* bitcode, size_t size, st
 // end's refusal).
 bool knownBufferControlBytes(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t binding, size_t length,
                              std::vector<uint8_t>* mask, std::string* why);
-bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
-                             uint32_t* outBinding, uint32_t* outLen, std::vector<uint8_t>* outMask,
-                             std::string* why);
+bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionConstants& constants,
+                              std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why);
 // The name a stage compiled from these is filed under in the cache ("" with no cache configured): for the tests
 std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known);
 // The visible functions a pipeline links (MTLLinkedFunctions), for the compiles on this thread while a LinkedScope

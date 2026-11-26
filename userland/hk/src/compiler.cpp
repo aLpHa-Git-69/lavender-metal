@@ -63,7 +63,7 @@ bool knownBufferControlBytes(const void*, size_t, const FunctionConstants&, uint
     return false;
 }
 
-bool detectUberControlBuffer(const void*, size_t, const FunctionConstants&, uint32_t*, uint32_t*, std::vector<uint8_t>*, std::string* why) {
+bool detectUberControlBuffers(const void*, size_t, const FunctionConstants&, std::vector<UberBufferInfo>*, std::string*, std::string* why) {
     *why = "no compiler in this build";
     return false;
 }
@@ -290,9 +290,21 @@ struct Translation {
 // supplied: the front end tells the module so, and reads them as zero)
 // a load of the known buffer at a constant offset inside its bytes: those bytes, as the load's components
 bool foldKnownLoad(nir_builder* b, nir_intrinsic_instr* intr, void* data) {
-    const KnownBuffer* known = static_cast<const KnownBuffer*>(data);
+    const KnownBuffer* root = static_cast<const KnownBuffer*>(data);
     if (intr->intrinsic != nir_intrinsic_load_ubo || !nir_src_is_const(intr->src[0]) || !nir_src_is_const(intr->src[1])) return false;
-    if (nir_src_as_uint(intr->src[0]) != known->binding) return false;
+    const uint32_t binding = uint32_t(nir_src_as_uint(intr->src[0]));
+    const KnownBuffer* known = nullptr;
+    if (root->binding == binding && !root->bytes.empty()) {
+        known = root;
+    } else {
+        for (const KnownBuffer& e : root->extra) {
+            if (e.binding == binding && !e.bytes.empty()) {
+                known = &e;
+                break;
+            }
+        }
+    }
+    if (known == nullptr) return false;
     const unsigned bits = intr->def.bit_size, comps = intr->def.num_components;
     const uint64_t at = nir_src_as_uint(intr->src[1]);
     if (bits % 8 != 0 || at + uint64_t(comps) * (bits / 8) > known->bytes.size()) return false;
@@ -1018,9 +1030,8 @@ bool fillKernel(Translation& t, const KernelHome& out, uint32_t highestSampler, 
     }
     out.words.assign(t.bin, t.bin + v->info.size / 4);
     out.immediates.assign(cs->immediates, cs->immediates + cs->immediates_count);
-    // (HAKIOS_METAL_LISTING=0: none -- the disassembly is a fifth of a CoreAnimation stage's compile, and the window
-    // server reads no listing)
-    static const bool listings = [] { const char* e = getenv("HAKIOS_METAL_LISTING"); return e == nullptr || e[0] != '0'; }();
+    // (HAKIOS_METAL_LISTING=1 to opt in: disassembly takes ~20% of compile time and floods console logs on iOS)
+    static const bool listings = [] { const char* e = getenv("HAKIOS_METAL_LISTING"); return e != nullptr && e[0] == '1'; }();
     if (listings) {
         char* text = nullptr;
         size_t length = 0;
@@ -1526,9 +1537,8 @@ std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionC
     return stageCacheName(bitcode, size, constants, iboBase, known);
 }
 
-bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionConstants& constants,
-                             uint32_t* outBinding, uint32_t* outLen, std::vector<uint8_t>* outMask,
-                             std::string* why) {
+bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionConstants& constants,
+                              std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why) {
     if (theCompiler() == nullptr) return refuse(why, "ir3 has no compiler");
     KnownBuffer none;
     Translation t;
@@ -1575,7 +1585,7 @@ bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionCon
         }
     }
 
-    static constexpr size_t kMaxBytes = 512;
+    static constexpr size_t kMaxBytes = 256;
     uint8_t masks[32][kMaxBytes]{};
     uint32_t maxEnd[32]{};
     uint32_t nCtrl[32]{};
@@ -1607,14 +1617,25 @@ bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionCon
         }
     }
 
-    int best = -1;
-    for (int b = 0; b < 32; b++) {
-        if (nCtrl[b] > 0 && (best < 0 || nCtrl[b] > nCtrl[best])) best = b;
+    outBuffers->clear();
+    std::string sum;
+    for (uint32_t b = 0; b < 32; b++) {
+        if (nCtrl[b] == 0) continue;
+        if (!sum.empty()) sum += " ";
+        sum += "b" + std::to_string(b) + ":" + std::to_string(nCtrl[b]) + "/" + std::to_string(maxEnd[b]) + "B";
+        if (outBuffers->size() < 4) {
+            UberBufferInfo ub;
+            ub.binding = b;
+            ub.length = maxEnd[b];
+            ub.mask.assign(masks[b], masks[b] + maxEnd[b]);
+            outBuffers->push_back(std::move(ub));
+        }
     }
-    if (best < 0) {
-        std::string info = "no UBO control bytes (ifs=" + std::to_string(nIfs) +
-                           " ubo=" + std::to_string(nUbo) + " hit=" + std::to_string(nUboHit) +
-                           " res=" + std::to_string(t.info.num_resources) + ":";
+    if (summary != nullptr) {
+        *summary = sum + " (ifs=" + std::to_string(nIfs) + " ubo=" + std::to_string(nUbo) + " hit=" + std::to_string(nUboHit) + ")";
+    }
+    if (outBuffers->empty()) {
+        std::string info = "no UBO control bytes (" + (summary ? *summary : "") + " res=" + std::to_string(t.info.num_resources) + ":";
         for (unsigned i = 0; i < t.info.num_resources && i < 8; i++) {
             const air_resource& r = t.info.resources[i];
             info += " k" + std::to_string(int(r.kind)) + "i" + std::to_string(r.index) + "s" + std::to_string(r.size);
@@ -1622,9 +1643,6 @@ bool detectUberControlBuffer(const void* bitcode, size_t size, const FunctionCon
         info += ")";
         return refuse(why, info);
     }
-    *outBinding = uint32_t(best);
-    *outLen = maxEnd[best];
-    outMask->assign(masks[best], masks[best] + maxEnd[best]);
     return true;
 }
 

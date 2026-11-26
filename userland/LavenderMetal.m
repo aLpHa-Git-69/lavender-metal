@@ -1217,6 +1217,8 @@ struct fnstate {
 	id library;                             /* retained */
 	NSString * name;
 	int type;                               /* the metallib's: 0 vertex, 1 fragment, 2 kernel */
+	struct lavcc_fc * fcs;                  /* sorted by index */
+	uint32_t nfcs;
 	id label;
 };
 
@@ -1413,14 +1415,223 @@ libNewFunction(id self, __unused SEL _cmd, id name)
 	return nil;
 }
 
+static char gFCAssocKey;
+static pthread_mutex_t gFCLock = PTHREAD_MUTEX_INITIALIZER;
+static void (*gOrigFCSetIndex)(id, SEL, const void *, uint64_t, uint64_t);
+static void (*gOrigFCSetRange)(id, SEL, const void *, uint64_t, NSRange);
+static void (*gOrigFCSetName)(id, SEL, const void *, uint64_t, id);
+static void (*gOrigFCReset)(id, SEL);
+static id (*gOrigFCCopy)(id, SEL, struct _NSZone *);
+
+static size_t
+mtlDataTypeBytes(uint64_t type)
+{
+	switch (type) {
+	case 53: case 45: case 49: return 1;            /* Bool, Char, UChar */
+	case 54: case 46: case 50: return 2;            /* Bool2, Char2, UChar2 */
+	case 55: case 47: case 51: return 3;            /* Bool3, Char3, UChar3 */
+	case 56: case 48: case 52: return 4;            /* Bool4, Char4, UChar4 */
+	case 37: case 41: case 16: return 2;            /* Short, UShort, Half */
+	case 38: case 42: case 17: return 4;            /* Short2, UShort2, Half2 */
+	case 39: case 43: case 18: return 6;            /* Short3, UShort3, Half3 */
+	case 40: case 44: case 19: return 8;            /* Short4, UShort4, Half4 */
+	case 29: case 33: case 3:  return 4;            /* Int, UInt, Float */
+	case 30: case 34: case 4:  return 8;            /* Int2, UInt2, Float2 */
+	case 121: case 125:        return 8;            /* Long, ULong */
+	default:                   return 0;
+	}
+}
+
+static uint64_t
+mtlDataTypeBits(const void * value, uint64_t type)
+{
+	size_t sz = mtlDataTypeBytes(type);
+	uint64_t bits = 0;
+
+	if (value == NULL || sz == 0 || sz > 8) {
+		return 0;
+	}
+	memcpy(&bits, value, sz);
+	if (type == 53) {
+		bits = (bits & 0xffu) ? 1ull : 0ull;
+	}
+	return bits;
+}
+
+static NSMutableDictionary *
+fcBagFor(id obj, BOOL create)
+{
+	NSMutableDictionary * d = objc_getAssociatedObject(obj, &gFCAssocKey);
+
+	if (d == nil && create) {
+		d = [[NSMutableDictionary alloc] init];
+		objc_setAssociatedObject(obj, &gFCAssocKey, d, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+		[d release];
+	}
+	return d;
+}
+
+static void
+fcSetIndex(id self, SEL _cmd, const void * value, uint64_t type, uint64_t index)
+{
+	if (gOrigFCSetIndex != NULL) {
+		gOrigFCSetIndex(self, _cmd, value, type, index);
+	}
+	if (value != NULL && mtlDataTypeBytes(type) != 0) {
+		uint64_t bits = mtlDataTypeBits(value, type);
+
+		pthread_mutex_lock(&gFCLock);
+		NSMutableDictionary * d = fcBagFor(self, YES);
+		[d setObject:[NSNumber numberWithUnsignedLongLong:bits] forKey:[NSNumber numberWithUnsignedLongLong:index]];
+		pthread_mutex_unlock(&gFCLock);
+	}
+}
+
+static void
+fcSetRange(id self, SEL _cmd, const void * values, uint64_t type, NSRange range)
+{
+	if (gOrigFCSetRange != NULL) {
+		gOrigFCSetRange(self, _cmd, values, type, range);
+	}
+	size_t sz = mtlDataTypeBytes(type);
+	if (values != NULL && sz != 0 && range.length > 0 && range.length <= 1024) {
+		pthread_mutex_lock(&gFCLock);
+		NSMutableDictionary * d = fcBagFor(self, YES);
+		for (NSUInteger i = 0; i < range.length; i++) {
+			uint64_t bits = mtlDataTypeBits((const uint8_t *)values + i * sz, type);
+			[d setObject:[NSNumber numberWithUnsignedLongLong:bits]
+			    forKey:[NSNumber numberWithUnsignedLongLong:(uint64_t)(range.location + i)]];
+		}
+		pthread_mutex_unlock(&gFCLock);
+	}
+}
+
+static void
+fcSetName(id self, SEL _cmd, const void * value, uint64_t type, id name)
+{
+	static int nameLog;
+
+	if (gOrigFCSetName != NULL) {
+		gOrigFCSetName(self, _cmd, value, type, name);
+	}
+	if (nameLog < 8) {
+		lavlog("MTLFunctionConstantValues: setConstantValue:type:%llu withName:%s (not indexed)",
+		    (unsigned long long)type, name != nil ? [[name description] UTF8String] : "(nil)");
+		nameLog++;
+	}
+}
+
+static void
+fcReset(id self, SEL _cmd)
+{
+	if (gOrigFCReset != NULL) {
+		gOrigFCReset(self, _cmd);
+	}
+	pthread_mutex_lock(&gFCLock);
+	NSMutableDictionary * d = fcBagFor(self, NO);
+	[d removeAllObjects];
+	pthread_mutex_unlock(&gFCLock);
+}
+
 static id
-libNewFunctionConstants(id self, SEL cmd, id name, __unused id constants, NSError ** err)
+fcCopy(id self, SEL _cmd, struct _NSZone * zone)
+{
+	id copy = gOrigFCCopy != NULL ? gOrigFCCopy(self, _cmd, zone) : nil;
+
+	if (copy != nil) {
+		pthread_mutex_lock(&gFCLock);
+		NSMutableDictionary * d = fcBagFor(self, NO);
+		if (d != nil && [d count] > 0) {
+			NSMutableDictionary * cd = [d mutableCopy];
+			objc_setAssociatedObject(copy, &gFCAssocKey, cd, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+			[cd release];
+		}
+		pthread_mutex_unlock(&gFCLock);
+	}
+	return copy;
+}
+
+static void
+installFunctionConstantHooks(void)
+{
+	Class fcBase = objc_getClass("MTLFunctionConstantValues");
+	id sample = fcBase != Nil ? [[fcBase alloc] init] : nil;
+	Class cls = sample != nil ? object_getClass(sample) : objc_getClass("MTLFunctionConstantValuesInternal");
+
+	[sample release];
+	if (cls == Nil) {
+		lavlog("no MTLFunctionConstantValues class to hook");
+		return;
+	}
+	Method m;
+	if ((m = class_getInstanceMethod(cls, sel_registerName("setConstantValue:type:atIndex:"))) != NULL) {
+		gOrigFCSetIndex = (void (*)(id, SEL, const void *, uint64_t, uint64_t))method_setImplementation(m, (IMP)fcSetIndex);
+	}
+	if ((m = class_getInstanceMethod(cls, sel_registerName("setConstantValues:type:withRange:"))) != NULL) {
+		gOrigFCSetRange = (void (*)(id, SEL, const void *, uint64_t, NSRange))method_setImplementation(m, (IMP)fcSetRange);
+	}
+	if ((m = class_getInstanceMethod(cls, sel_registerName("setConstantValue:type:withName:"))) != NULL) {
+		gOrigFCSetName = (void (*)(id, SEL, const void *, uint64_t, id))method_setImplementation(m, (IMP)fcSetName);
+	}
+	if ((m = class_getInstanceMethod(cls, sel_registerName("reset"))) != NULL) {
+		gOrigFCReset = (void (*)(id, SEL))method_setImplementation(m, (IMP)fcReset);
+	}
+	if ((m = class_getInstanceMethod(cls, sel_registerName("copyWithZone:"))) != NULL) {
+		gOrigFCCopy = (id (*)(id, SEL, struct _NSZone *))method_setImplementation(m, (IMP)fcCopy);
+	}
+	lavlog("hooked %s for function constants", class_getName(cls));
+}
+
+static int
+fcCmp(const void * a, const void * b)
+{
+	uint32_t ia = ((const struct lavcc_fc *)a)->index, ib = ((const struct lavcc_fc *)b)->index;
+	return ia < ib ? -1 : ia > ib ? 1 : 0;
+}
+
+static void
+fnAttachConstants(struct fnstate * fs, id constants)
+{
+	static int fcLog;
+
+	if (constants == nil) {
+		return;
+	}
+	pthread_mutex_lock(&gFCLock);
+	NSMutableDictionary * d = fcBagFor(constants, NO);
+	NSUInteger cnt = d != nil ? [d count] : 0;
+	if (cnt > 0) {
+		struct lavcc_fc * arr = calloc(cnt, sizeof(*arr));
+		uint32_t n = 0;
+
+		for (NSNumber * k in d) {
+			NSNumber * v = [d objectForKey:k];
+			arr[n].index = [k unsignedIntValue];
+			arr[n].bits = [v unsignedLongLongValue];
+			n++;
+		}
+		qsort(arr, n, sizeof(*arr), fcCmp);
+		free(fs->fcs);
+		fs->fcs = arr;
+		fs->nfcs = n;
+		if (fcLog < 20) {
+			lavlog("newFunction %s with %u function constants", [fs->name UTF8String], n);
+			fcLog++;
+		}
+	}
+	pthread_mutex_unlock(&gFCLock);
+}
+
+static id
+libNewFunctionConstants(id self, SEL cmd, id name, id constants, NSError ** err)
 {
 	id f = libNewFunction(self, cmd, name);
 
 	if (f == nil) {
 		lavError(err, @"MTLLibraryErrorDomain", "no such function");
+		return nil;
 	}
+	fnAttachConstants(STATE(f, struct fnstate), constants);
 	return f;
 }
 
@@ -1431,15 +1642,31 @@ libNewFunctionDescriptor(id self, SEL cmd, id desc, NSError ** err)
 
 	if (f == nil) {
 		lavError(err, @"MTLLibraryErrorDomain", "no such function");
+		return nil;
+	}
+	if (desc != nil && [desc respondsToSelector:sel_registerName("constantValues")]) {
+		id cv = ((id (*)(id, SEL))objc_msgSend)(desc, sel_registerName("constantValues"));
+		fnAttachConstants(STATE(f, struct fnstate), cv);
 	}
 	return f;
 }
 
 static id
-fnNewSpecialized(id self, __unused SEL _cmd, __unused id desc, __unused id archive, __unused id cache, NSError ** err)
+fnNewSpecialized(id self, __unused SEL _cmd, id desc, __unused id archive, __unused id cache, NSError ** err)
 {
+	struct fnstate * src = STATE(self, struct fnstate);
+	id cv = (desc != nil && [desc respondsToSelector:sel_registerName("constantValues")]) ?
+	    ((id (*)(id, SEL))objc_msgSend)(desc, sel_registerName("constantValues")) : nil;
+
 	if (err != NULL) {
 		*err = nil;
+	}
+	if (cv != nil) {
+		id f = libNewFunction(src->library, _cmd, src->name);
+		if (f != nil) {
+			fnAttachConstants(STATE(f, struct fnstate), cv);
+			return f;
+		}
 	}
 	return [self retain];
 }
@@ -1465,6 +1692,7 @@ fnDealloc(id self, __unused SEL _cmd)
 	struct fnstate * st = STATE(self, struct fnstate);
 	struct objc_super sup = { self, class_getSuperclass(gFunctionClass) };
 
+	free(st->fcs);
 	[st->library release];
 	[st->name release];
 	[st->label release];
@@ -1522,7 +1750,7 @@ makePipeline(id function, NSError ** err)
 		return nil;
 	}
 	pthread_mutex_lock(&gCCLock);
-	if (!lavcc_compile(ls->lib, [fs->name UTF8String], &k, why, sizeof(why))) {
+	if (!lavcc_compile(ls->lib, [fs->name UTF8String], fs->fcs, fs->nfcs, &k, why, sizeof(why))) {
 		pthread_mutex_unlock(&gCCLock);
 		lavlog("pipeline of %s: the compiler refused it: %s", [fs->name UTF8String], why);
 		lavError(err, @"MTLLibraryErrorDomain", why);
@@ -2331,5 +2559,6 @@ lavenderMetalLoad(void)
 	ADD(cls, "dedicatedMemorySize", deviceZero, "Q@:");
 	registerObjectClasses(cls);
 	objc_registerClassPair(cls);
+	installFunctionConstantHooks();
 	lavlog("loaded: LavenderMetalDevice and its objects are registered (base %s)", class_getName(gDeviceBase));
 }

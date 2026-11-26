@@ -44,7 +44,18 @@ extern "C" const char* lavcc_function_name(struct lavcc_lib* l, unsigned i, int*
     return l->lib.functions()[i].name.c_str();
 }
 
-extern "C" int lavcc_compile(struct lavcc_lib* l, const char* name, struct lav5_kernel* out, char* why, size_t whysize)
+static FunctionConstants to_fcs(const struct lavcc_fc* fcs, uint32_t nfcs)
+{
+    FunctionConstants out;
+    if (fcs && nfcs) {
+        out.reserve(nfcs);
+        for (uint32_t i = 0; i < nfcs; i++) out.push_back(FunctionConstant{ fcs[i].index, fcs[i].bits });
+    }
+    return out;
+}
+
+extern "C" int lavcc_compile(struct lavcc_lib* l, const char* name, const struct lavcc_fc* fcs, uint32_t nfcs,
+                             struct lav5_kernel* out, char* why, size_t whysize)
 {
     const MetalFunction* fn = l->lib.find(name);
     if (!fn) {
@@ -62,7 +73,7 @@ extern "C" int lavcc_compile(struct lavcc_lib* l, const char* name, struct lav5_
         return 0;
     }
     std::string w;
-    auto k = compileAir(bc, bcSize, &w);
+    auto k = compileAir(bc, bcSize, &w, to_fcs(fcs, nfcs));
     if (!k) {
         snprintf(why, whysize, "%s", w.c_str());
         return 0;
@@ -192,7 +203,8 @@ static void flatten_stage(const Stage& s, const std::vector<Resource>& resources
     out->writes_pos = s.writesPos;
 }
 
-static std::unique_ptr<CompiledStage> stage_of(struct lavcc_lib* l, const char* name, uint8_t type, std::string* why)
+static std::unique_ptr<CompiledStage> stage_of(struct lavcc_lib* l, const char* name, uint8_t type,
+                                               const struct lavcc_fc* fcs, uint32_t nfcs, std::string* why)
 {
     const MetalFunction* fn = l->lib.find(name);
     if (!fn) { *why = std::string("no function ") + name; return nullptr; }
@@ -200,16 +212,17 @@ static std::unique_ptr<CompiledStage> stage_of(struct lavcc_lib* l, const char* 
     const uint8_t* bc = nullptr;
     uint64_t n = 0;
     if (!l->lib.bitcode(*fn, &bc, &n)) { *why = std::string("no bitcode for ") + name; return nullptr; }
-    return compileStage(bc, n, why);
+    return compileStage(bc, n, why, to_fcs(fcs, nfcs));
 }
 
-extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, struct lavcc_lib* lf, const char* fname,
+extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, const struct lavcc_fc* vfcs, uint32_t nvfcs,
+                                     struct lavcc_lib* lf, const char* fname, const struct lavcc_fc* ffcs, uint32_t nffcs,
                                      struct lav5_stage* vs, struct lav5_stage* fs, struct lav5_link* link, char* why, size_t whysize)
 {
     std::string w;
-    auto v = stage_of(lv, vname, MetalFunction::kVertex, &w);
+    auto v = stage_of(lv, vname, MetalFunction::kVertex, vfcs, nvfcs, &w);
     if (!v) { snprintf(why, whysize, "vertex function: %s", w.c_str()); return 0; }
-    auto f = stage_of(lf, fname, MetalFunction::kFragment, &w);
+    auto f = stage_of(lf, fname, MetalFunction::kFragment, ffcs, nffcs, &w);
     if (!f) { snprintf(why, whysize, "fragment function: %s", w.c_str()); return 0; }
     Linkage lk{};
     if (!render::link(v->stage, f->stage, &lk, &w)) { snprintf(why, whysize, "link: %s", w.c_str()); return 0; }
@@ -233,9 +246,11 @@ extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, st
     return 1;
 }
 
-extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, int* out_binding, uint32_t* out_len,
-                               uint8_t* mask, size_t mask_cap, char* why, size_t whysize)
+extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, const struct lavcc_fc* ffcs, uint32_t nffcs,
+                               struct lavcc_uber_buf* out_bufs, uint32_t* out_nbufs, char* summary, size_t sumsize,
+                               char* why, size_t whysize)
 {
+    *out_nbufs = 0;
     const MetalFunction* fn = lf->lib.find(fname);
     if (!fn || fn->type != MetalFunction::kFragment) {
         if (why && whysize) snprintf(why, whysize, "not a fragment function");
@@ -247,29 +262,35 @@ extern "C" int lavcc_uber_info(struct lavcc_lib* lf, const char* fname, int* out
         if (why && whysize) snprintf(why, whysize, "no bitcode");
         return 0;
     }
-    std::string w;
-    uint32_t binding = 0, len = 0;
-    std::vector<uint8_t> ctrl;
-    if (!detectUberControlBuffer(bc, n, {}, &binding, &len, &ctrl, &w)) {
+    std::string sum, w;
+    std::vector<UberBufferInfo> ubs;
+    if (!detectUberControlBuffers(bc, n, to_fcs(ffcs, nffcs), &ubs, &sum, &w)) {
+        if (summary && sumsize) snprintf(summary, sumsize, "%s", sum.c_str());
         if (why && whysize) snprintf(why, whysize, "%s", w.c_str());
         return 0;
     }
-    if (len == 0 || len > mask_cap || ctrl.size() < len) {
-        if (why && whysize) snprintf(why, whysize, "len %u > cap %zu", len, mask_cap);
-        return 0;
+    if (summary && sumsize) snprintf(summary, sumsize, "%s", sum.c_str());
+    uint32_t nb = 0;
+    for (const auto& ub : ubs) {
+        if (nb >= LAVCC_MAX_UBER_BUFS) break;
+        if (ub.length == 0 || ub.length > LAVCC_UBER_BUF_CAP || ub.mask.size() < ub.length) continue;
+        memset(&out_bufs[nb], 0, sizeof(out_bufs[nb]));
+        out_bufs[nb].binding = ub.binding;
+        out_bufs[nb].len = ub.length;
+        memcpy(out_bufs[nb].mask, ub.mask.data(), ub.length);
+        nb++;
     }
-    memcpy(mask, ctrl.data(), len);
-    *out_binding = (int)binding;
-    *out_len = len;
-    return 1;
+    *out_nbufs = nb;
+    return nb > 0 ? 1 : 0;
 }
 
-extern "C" int lavcc_compile_program_spec(struct lavcc_lib* lv, const char* vname, struct lavcc_lib* lf, const char* fname,
-                                          uint32_t binding, const uint8_t* bytes, const uint8_t* fold, uint32_t len,
+extern "C" int lavcc_compile_program_spec(struct lavcc_lib* lv, const char* vname, const struct lavcc_fc* vfcs, uint32_t nvfcs,
+                                          struct lavcc_lib* lf, const char* fname, const struct lavcc_fc* ffcs, uint32_t nffcs,
+                                          const struct lavcc_uber_val* uvals, uint32_t nuvals,
                                           struct lav5_stage* vs, struct lav5_stage* fs, struct lav5_link* link, char* why, size_t whysize)
 {
     std::string w;
-    auto v = stage_of(lv, vname, MetalFunction::kVertex, &w);
+    auto v = stage_of(lv, vname, MetalFunction::kVertex, vfcs, nvfcs, &w);
     if (!v) { snprintf(why, whysize, "vertex function: %s", w.c_str()); return 0; }
     const MetalFunction* fn = lf->lib.find(fname);
     if (!fn || fn->type != MetalFunction::kFragment) {
@@ -282,11 +303,22 @@ extern "C" int lavcc_compile_program_spec(struct lavcc_lib* lv, const char* vnam
         snprintf(why, whysize, "no bitcode for %s", fname);
         return 0;
     }
+    if (!uvals || nuvals == 0) {
+        snprintf(why, whysize, "no uber buffers");
+        return 0;
+    }
     KnownBuffer kb;
-    kb.binding = binding;
-    kb.bytes.assign(bytes, bytes + len);
-    if (fold != nullptr) kb.fold.assign(fold, fold + len);
-    auto f = compileStage(bc, n, &w, {}, 0, &kb);
+    kb.binding = uvals[0].binding;
+    kb.bytes.assign(uvals[0].bytes, uvals[0].bytes + uvals[0].len);
+    if (uvals[0].fold != nullptr) kb.fold.assign(uvals[0].fold, uvals[0].fold + uvals[0].len);
+    for (uint32_t i = 1; i < nuvals; i++) {
+        KnownBuffer e;
+        e.binding = uvals[i].binding;
+        e.bytes.assign(uvals[i].bytes, uvals[i].bytes + uvals[i].len);
+        if (uvals[i].fold != nullptr) e.fold.assign(uvals[i].fold, uvals[i].fold + uvals[i].len);
+        kb.extra.push_back(std::move(e));
+    }
+    auto f = compileStage(bc, n, &w, to_fcs(ffcs, nffcs), 0, &kb);
     if (!f) { snprintf(why, whysize, "fragment spec: %s", w.c_str()); return 0; }
     Linkage lk{};
     if (!render::link(v->stage, f->stage, &lk, &w)) { snprintf(why, whysize, "link: %s", w.c_str()); return 0; }
