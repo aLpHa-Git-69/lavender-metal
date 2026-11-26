@@ -390,7 +390,7 @@ extern "C" void lavcc_survey_pairs(struct lavcc_lib* l)
     for (size_t i = 0; i < fns.size(); i++) {
         if (fns[i].type != MetalFunction::kVertex && fns[i].type != MetalFunction::kFragment) continue;
         std::string w;
-        st[i] = stage_of(l, fns[i].name.c_str(), fns[i].type, &w);
+        st[i] = stage_of(l, fns[i].name.c_str(), fns[i].type, nullptr, 0, &w);
         if (!st[i]) printf("NOCOMPILE %s: %s\n", fns[i].name.c_str(), w.c_str());
     }
     unsigned tried = 0, usable = 0, refused = 0, nolink = 0;
