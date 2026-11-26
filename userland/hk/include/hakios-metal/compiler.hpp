@@ -151,6 +151,7 @@ bool knownBufferControlBytes(const void* bitcode, size_t size, const FunctionCon
                              std::vector<uint8_t>* mask, std::string* why);
 bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionConstants& constants,
                               std::vector<UberBufferInfo>* outBuffers, std::string* summary, std::string* why);
+bool functionConstantIndexMap(const void* bitcode, size_t size, std::vector<std::pair<std::string, uint32_t>>* out);
 // The name a stage compiled from these is filed under in the cache ("" with no cache configured): for the tests
 std::string stageCacheFileName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known);
 // The visible functions a pipeline links (MTLLinkedFunctions), for the compiles on this thread while a LinkedScope

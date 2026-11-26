@@ -17,6 +17,7 @@
 // under -Wextra, so the Makefile hands them in as system headers (tools/compiler.mk)
 #include "nir.h"
 #include "nir_air.h"
+#include "air_module.h"
 #include "ir3/ir3_compiler.h"
 #include "ir3/ir3_nir.h"
 #include "ir3/ir3_shader.h"
@@ -65,6 +66,10 @@ bool knownBufferControlBytes(const void*, size_t, const FunctionConstants&, uint
 
 bool detectUberControlBuffers(const void*, size_t, const FunctionConstants&, std::vector<UberBufferInfo>*, std::string*, std::string* why) {
     *why = "no compiler in this build";
+    return false;
+}
+
+bool functionConstantIndexMap(const void*, size_t, std::vector<std::pair<std::string, uint32_t>>*) {
     return false;
 }
 
@@ -1643,6 +1648,46 @@ bool detectUberControlBuffers(const void* bitcode, size_t size, const FunctionCo
         info += ")";
         return refuse(why, info);
     }
+    return true;
+}
+
+bool functionConstantIndexMap(const void* bitcode, size_t size, std::vector<std::pair<std::string, uint32_t>>* out) {
+    out->clear();
+    void* ctx = ralloc_context(nullptr);
+    const char* err = nullptr;
+    struct air_module* m = air_module_read(ctx, bitcode, size, &err);
+    if (m == nullptr) {
+        ralloc_free(ctx);
+        return false;
+    }
+    const struct air_named_md* n = nullptr;
+    for (unsigned i = 0; i < m->num_named_md; i++) {
+        if (m->named_md[i].name != nullptr && std::strcmp(m->named_md[i].name, "air.function_constants") == 0) {
+            n = &m->named_md[i];
+            break;
+        }
+    }
+    if (n != nullptr) {
+        for (unsigned i = 0; i < n->num_ops; i++) {
+            const struct air_md* node = n->ops[i];
+            if (node == nullptr || node->kind != AIR_MD_NODE) continue;
+            std::string name;
+            for (unsigned k = 0; k < node->num_ops; k++) {
+                const struct air_md* op = node->ops[k];
+                if (op == nullptr) continue;
+                if (op->kind == AIR_MD_STRING && op->str != nullptr) {
+                    name.assign(op->str, op->len);
+                } else if (op->kind == AIR_MD_VALUE && op->value != nullptr) {
+                    uint64_t idx = 0;
+                    if (air_const_uint(op->value, &idx)) {
+                        if (!name.empty()) out->emplace_back(name, uint32_t(idx));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    ralloc_free(ctx);
     return true;
 }
 

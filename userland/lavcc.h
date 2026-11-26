@@ -37,6 +37,7 @@ struct lavcc_lib * lavcc_open(const void * data, size_t size, char * why, size_t
 void lavcc_close(struct lavcc_lib * l);
 unsigned lavcc_function_count(struct lavcc_lib * l);
 const char * lavcc_function_name(struct lavcc_lib * l, unsigned i, int * type);
+int lavcc_resolve_fc_name(struct lavcc_lib * l, const char * fname, const char * cname, uint32_t * out_index);
 /* 1 with OUT filled (free it with lavcc_kernel_free), 0 with the reason in WHY */
 int lavcc_compile(struct lavcc_lib * l, const char * name, const struct lavcc_fc * fcs, uint32_t nfcs,
     struct lav5_kernel * out, char * why, size_t whysize);

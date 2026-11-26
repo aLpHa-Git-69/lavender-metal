@@ -1416,6 +1416,7 @@ libNewFunction(id self, __unused SEL _cmd, id name)
 }
 
 static char gFCAssocKey;
+static char gFCNameAssocKey;
 static pthread_mutex_t gFCLock = PTHREAD_MUTEX_INITIALIZER;
 static void (*gOrigFCSetIndex)(id, SEL, const void *, uint64_t, uint64_t);
 static void (*gOrigFCSetRange)(id, SEL, const void *, uint64_t, NSRange);
@@ -1506,18 +1507,32 @@ fcSetRange(id self, SEL _cmd, const void * values, uint64_t type, NSRange range)
 	}
 }
 
+static NSMutableDictionary *
+fcNameBagFor(id obj, BOOL create)
+{
+	NSMutableDictionary * d = objc_getAssociatedObject(obj, &gFCNameAssocKey);
+
+	if (d == nil && create) {
+		d = [[NSMutableDictionary alloc] init];
+		objc_setAssociatedObject(obj, &gFCNameAssocKey, d, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+		[d release];
+	}
+	return d;
+}
+
 static void
 fcSetName(id self, SEL _cmd, const void * value, uint64_t type, id name)
 {
-	static int nameLog;
-
 	if (gOrigFCSetName != NULL) {
 		gOrigFCSetName(self, _cmd, value, type, name);
 	}
-	if (nameLog < 8) {
-		lavlog("MTLFunctionConstantValues: setConstantValue:type:%llu withName:%s (not indexed)",
-		    (unsigned long long)type, name != nil ? [[name description] UTF8String] : "(nil)");
-		nameLog++;
+	if (value != NULL && name != nil && mtlDataTypeBytes(type) != 0) {
+		uint64_t bits = mtlDataTypeBits(value, type);
+
+		pthread_mutex_lock(&gFCLock);
+		NSMutableDictionary * d = fcNameBagFor(self, YES);
+		[d setObject:[NSNumber numberWithUnsignedLongLong:bits] forKey:name];
+		pthread_mutex_unlock(&gFCLock);
 	}
 }
 
@@ -1529,7 +1544,9 @@ fcReset(id self, SEL _cmd)
 	}
 	pthread_mutex_lock(&gFCLock);
 	NSMutableDictionary * d = fcBagFor(self, NO);
+	NSMutableDictionary * dn = fcNameBagFor(self, NO);
 	[d removeAllObjects];
+	[dn removeAllObjects];
 	pthread_mutex_unlock(&gFCLock);
 }
 
@@ -1541,10 +1558,16 @@ fcCopy(id self, SEL _cmd, struct _NSZone * zone)
 	if (copy != nil) {
 		pthread_mutex_lock(&gFCLock);
 		NSMutableDictionary * d = fcBagFor(self, NO);
+		NSMutableDictionary * dn = fcNameBagFor(self, NO);
 		if (d != nil && [d count] > 0) {
 			NSMutableDictionary * cd = [d mutableCopy];
 			objc_setAssociatedObject(copy, &gFCAssocKey, cd, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 			[cd release];
+		}
+		if (dn != nil && [dn count] > 0) {
+			NSMutableDictionary * cdn = [dn mutableCopy];
+			objc_setAssociatedObject(copy, &gFCNameAssocKey, cdn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+			[cdn release];
 		}
 		pthread_mutex_unlock(&gFCLock);
 	}
@@ -1593,33 +1616,76 @@ static void
 fnAttachConstants(struct fnstate * fs, id constants)
 {
 	static int fcLog;
+	NSMutableDictionary * idxCopy = nil;
+	NSMutableDictionary * nameCopy = nil;
 
 	if (constants == nil) {
 		return;
 	}
 	pthread_mutex_lock(&gFCLock);
 	NSMutableDictionary * d = fcBagFor(constants, NO);
-	NSUInteger cnt = d != nil ? [d count] : 0;
-	if (cnt > 0) {
-		struct lavcc_fc * arr = calloc(cnt, sizeof(*arr));
-		uint32_t n = 0;
+	NSMutableDictionary * dn = fcNameBagFor(constants, NO);
+	if (d != nil && [d count] > 0) {
+		idxCopy = [d mutableCopy];
+	}
+	if (dn != nil && [dn count] > 0) {
+		nameCopy = [dn mutableCopy];
+	}
+	pthread_mutex_unlock(&gFCLock);
 
-		for (NSNumber * k in d) {
-			NSNumber * v = [d objectForKey:k];
+	NSUInteger maxCnt = (idxCopy ? [idxCopy count] : 0) + (nameCopy ? [nameCopy count] : 0);
+	if (maxCnt > 0) {
+		struct lavcc_fc * arr = calloc(maxCnt, sizeof(*arr));
+		uint32_t n = 0, nNamed = 0;
+		struct lavcc_lib * lib = STATE(fs->library, struct libstate)->lib;
+		const char * fname = [fs->name UTF8String];
+
+		for (NSNumber * k in idxCopy) {
+			NSNumber * v = [idxCopy objectForKey:k];
 			arr[n].index = [k unsignedIntValue];
 			arr[n].bits = [v unsignedLongLongValue];
 			n++;
 		}
-		qsort(arr, n, sizeof(*arr), fcCmp);
-		free(fs->fcs);
-		fs->fcs = arr;
-		fs->nfcs = n;
-		if (fcLog < 20) {
-			lavlog("newFunction %s with %u function constants", [fs->name UTF8String], n);
-			fcLog++;
+		if (nameCopy != nil && [nameCopy count] > 0) {
+			pthread_mutex_lock(&gCCLock);
+			for (NSString * k in nameCopy) {
+				uint32_t idx = 0;
+
+				if (lavcc_resolve_fc_name(lib, fname, [k UTF8String], &idx)) {
+					NSNumber * v = [nameCopy objectForKey:k];
+					BOOL dup = NO;
+					for (uint32_t j = 0; j < n; j++) {
+						if (arr[j].index == idx) {
+							arr[j].bits = [v unsignedLongLongValue];
+							dup = YES;
+							break;
+						}
+					}
+					if (!dup) {
+						arr[n].index = idx;
+						arr[n].bits = [v unsignedLongLongValue];
+						n++;
+					}
+					nNamed++;
+				}
+			}
+			pthread_mutex_unlock(&gCCLock);
+		}
+		if (n > 0) {
+			qsort(arr, n, sizeof(*arr), fcCmp);
+			free(fs->fcs);
+			fs->fcs = arr;
+			fs->nfcs = n;
+			if (fcLog < 24) {
+				lavlog("newFunction %s with %u function constants (%u resolved by name)", fname, n, nNamed);
+				fcLog++;
+			}
+		} else {
+			free(arr);
 		}
 	}
-	pthread_mutex_unlock(&gFCLock);
+	[idxCopy release];
+	[nameCopy release];
 }
 
 static id

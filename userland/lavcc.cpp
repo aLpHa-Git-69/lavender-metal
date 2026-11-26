@@ -19,6 +19,7 @@ using namespace hakios::metal;
 struct lavcc_lib {
     std::vector<uint8_t> bytes;
     MetalLibrary lib;
+    std::map<std::string, std::map<std::string, uint32_t>> fc_name_cache;
 };
 
 extern "C" struct lavcc_lib* lavcc_open(const void* data, size_t size, char* why, size_t whysize)
@@ -42,6 +43,31 @@ extern "C" const char* lavcc_function_name(struct lavcc_lib* l, unsigned i, int*
     if (i >= l->lib.functions().size()) return nullptr;
     if (type) *type = l->lib.functions()[i].type;
     return l->lib.functions()[i].name.c_str();
+}
+
+extern "C" int lavcc_resolve_fc_name(struct lavcc_lib* l, const char* fname, const char* cname, uint32_t* out_index)
+{
+    if (!l || !fname || !cname || !out_index) return 0;
+    auto it = l->fc_name_cache.find(fname);
+    if (it == l->fc_name_cache.end()) {
+        std::map<std::string, uint32_t> m;
+        const MetalFunction* fn = l->lib.find(fname);
+        if (fn) {
+            const uint8_t* bc = nullptr;
+            uint64_t n = 0;
+            if (l->lib.bitcode(*fn, &bc, &n)) {
+                std::vector<std::pair<std::string, uint32_t>> pairs;
+                if (functionConstantIndexMap(bc, n, &pairs)) {
+                    for (const auto& p : pairs) m[p.first] = p.second;
+                }
+            }
+        }
+        it = l->fc_name_cache.emplace(fname, std::move(m)).first;
+    }
+    auto jt = it->second.find(cname);
+    if (jt == it->second.end()) return 0;
+    *out_index = jt->second;
+    return 1;
 }
 
 static FunctionConstants to_fcs(const struct lavcc_fc* fcs, uint32_t nfcs)
