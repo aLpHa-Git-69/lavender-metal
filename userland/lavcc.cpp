@@ -227,6 +227,13 @@ static void flatten_stage(const Stage& s, const std::vector<Resource>& resources
     out->need_pixlod = s.needPixlod;
     out->has_kill = s.hasKill;
     out->writes_pos = s.writesPos;
+    out->fb_read = s.fbRead;
+    out->num_tex_slots = s.k.numTextureSlots > s.k.numSamp ? s.k.numTextureSlots : s.k.numSamp;
+    if (out->num_tex_slots > LAV5_MAX_TEX) out->num_tex_slots = LAV5_MAX_TEX;
+    out->sampler_mask = s.k.samplerMask;
+    for (uint32_t i = 0; i < LAV5_MAX_TEX && i < kMaxTextureSlots; i++) {
+        out->fb_target[i] = s.k.textures[i].fbTarget;
+    }
 }
 
 static std::unique_ptr<CompiledStage> stage_of(struct lavcc_lib* l, const char* name, uint8_t type,

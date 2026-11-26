@@ -590,7 +590,7 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564336u
+#define PIPE_CACHE_MAGIC 0x4c564337u
 
 static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
@@ -791,7 +791,7 @@ makeRenderPipeline(id desc, NSError ** err)
 		const char * fname = [fs->name UTF8String];
 		BOOL deferred = NO;
 
-		if (strncmp(fname, "fixed_frag_", 11) == 0) {
+		if (fs->is_generic && strncmp(fname, "fixed_frag_", 11) == 0) {
 			uint32_t nb = 0, nifs = 0;
 			char sum[256] = "", uwhy[256] = "";
 
@@ -883,8 +883,8 @@ makeRenderPipeline(id desc, NSError ** err)
 	}
 	rp->vfn = [vf retain];
 	rp->ffn = [ff retain];
-	lavlog("render pipeline %s + %s: %u+%u words%s, %u attributes", [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords,
-	    rp->fs.k.nwords, rp->fs_deferred ? " (deferred)" : "", rp->nattr);
+	lavlog("render pipeline %s + %s: %u+%u words%s, %u attributes%s", [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords,
+	    rp->fs.k.nwords, rp->fs_deferred ? " (deferred)" : "", rp->nattr, rp->fs.fb_read ? " (fbRead)" : "");
 	return o;
 refuse:
 	lavError(err, @"MTLLibraryErrorDomain", "the render pipeline uses something this driver does not serve (see the log)");
@@ -1931,6 +1931,22 @@ runDraw(struct op * op)
 		}
 		if (d->fsamp[i] != nil) {
 			r->samp[i] = *STATE(d->fsamp[i], struct lav5_samp);
+		}
+	}
+	/* Framebuffer fetch slots (lowerFbRead): bind the pass's colour attachment n at slot i when fb_target[i] == n + 1. */
+	for (int i = 0; i < LAV5_MAX_TEX; i++) {
+		uint8_t fbt = r->fs->fb_target[i];
+		if (fbt == 0) {
+			continue;
+		}
+		uint32_t att = (uint32_t)fbt - 1u;
+		id srcTex = (att == 0) ? d->target : (att < 8 ? d->xtarget[att] : nil);
+		if (srcTex != nil) {
+			struct texstate * ts = STATE(srcTex, struct texstate);
+			uint32_t tf = lavFmtFromMetal(ts->format, NULL);
+
+			r->tex[i] = (struct lav5_tex){ ts->b.gpu, ts->width, ts->height, ts->pitch,
+			    (ts->format == PF_BGRA8 || ts->format == PF_BGRA8_SRGB) ? 1u : 0u, 1u, tf + 1u };
 		}
 	}
 	r->flush_gpu = gStream.gpu + SCRATCH_OFFSET + 64;

@@ -294,6 +294,7 @@ lavOpen(void)
 			gConn = 0;
 			return;
 		}
+		memset(gStream.cpu, 0, gStream.len);
 		lavlog("the GPU service is open; stream buffer at GPU %#llx", (unsigned long long)gStream.gpu);
 	});
 	return gConn != 0 && gStream.handle != 0;
@@ -1219,6 +1220,7 @@ struct fnstate {
 	int type;                               /* the metallib's: 0 vertex, 1 fragment, 2 kernel */
 	struct lavcc_fc * fcs;                  /* sorted by index */
 	uint32_t nfcs;
+	BOOL is_generic;
 	id label;
 };
 
@@ -1647,6 +1649,10 @@ fnAttachConstants(struct fnstate * fs, id constants)
 			n++;
 		}
 		if (nameCopy != nil && [nameCopy count] > 0) {
+			NSNumber * genVal = [nameCopy objectForKey:@"fc_generic"];
+			if (genVal != nil && [genVal unsignedLongLongValue] != 0) {
+				fs->is_generic = YES;
+			}
 			pthread_mutex_lock(&gCCLock);
 			for (NSString * k in nameCopy) {
 				uint32_t idx = 0;

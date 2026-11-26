@@ -16,6 +16,7 @@ extern "C" {
 
 #define LAV5_MAX_BUFFERS 31
 #define LAV5_MAX_RANGES  32
+#define LAV5_MAX_TEX     20
 
 struct lav5_range {
 	uint32_t block;         /* Metal's [[buffer(n)]] the range is read from */
@@ -92,6 +93,8 @@ struct lav5_stage {
 	uint32_t ncolor;
 	uint32_t depth_regid;
 	uint32_t need_pixlod, has_kill, writes_pos;
+	uint32_t fb_read, num_tex_slots, sampler_mask;
+	uint8_t fb_target[LAV5_MAX_TEX];
 };
 
 struct lav5_link {
@@ -180,7 +183,7 @@ struct lav5_render {
 	uint32_t cull;                              /* 0 none, 1 front, 2 back */
 	uint32_t front_cw;
 	uint64_t flush_gpu;
-	struct lav5_tex tex[16];                    /* fragment stage, by Metal index */
+	struct lav5_tex tex[LAV5_MAX_TEX];          /* fragment stage, by Metal index */
 	struct lav5_samp samp[16];
 	struct lav5_blend blend;
 	float blend_color[4];

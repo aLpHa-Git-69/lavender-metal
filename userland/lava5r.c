@@ -348,6 +348,10 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	(void)swap;
 
 	*why = NULL;
+	if (r->rt_gpu == 0 || r->vs_code == 0 || r->fs_code == 0) {
+		*why = "missing render target or shader code GPU address";
+		return 0;
+	}
 	if (vs->nattr != r->nattr) {
 		*why = "the vertex stage's attributes and the vertex descriptor's differ in number";
 		return 0;
@@ -430,18 +434,21 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	zeros(s, REG_A5XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
 	set(s, REG_A5XX_RB_STENCIL_INFO, 0);
 
-	/* emit_mrt: the colour targets of the pass, the others empty */
+	/* emit_mrt: the colour targets of the pass, the others empty (never write gpu=0 on MRT holes!) */
+	uint32_t rt_valid_mask = 0;
 	for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
 		uint32_t rt_fmt = 0;
 		uint32_t rt_srgb_rb = 0, rt_srgb_sp = 0;
 		enum a3xx_color_swap sw = WZYX;
+		uint64_t gpu = i == 0 ? r->rt_gpu : r->rt[i].gpu;
+		int rt_ok = (i == 0 && gpu != 0) || (i > 0 && i < nrt && r->rt[i].valid && gpu != 0);
 
 		pkt4(s, REG_A5XX_RB_MRT_BUF_INFO(i), 5);
-		if (i < nrt) {
-			uint64_t gpu = i == 0 ? r->rt_gpu : r->rt[i].gpu;
+		if (rt_ok) {
 			uint32_t pitch = i == 0 ? r->rt_pitch : r->rt[i].pitch;
 			uint32_t fmt = i == 0 ? r->rt_format : r->rt[i].format;
 
+			rt_valid_mask |= 1u << i;
 			switch (fmt) {
 			case LAV5_FMT_RGBA8:
 				rt_fmt = RB5_R8G8B8A8_UNORM; sw = WZYX; break;
@@ -490,7 +497,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, 0);
 			out(s, 0);
 		}
-		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(i < nrt ? rt_fmt : 0) | rt_srgb_sp);
+		set(s, REG_A5XX_SP_FS_MRT_REG(i), A5XX_SP_FS_MRT_REG_COLOR_FORMAT(rt_ok ? rt_fmt : 0) | rt_srgb_sp);
 		zeros(s, REG_A5XX_RB_MRT_FLAG_BUFFER(i), 4);
 	}
 	/* emit_msaa: one sample */
@@ -505,11 +512,15 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	out(s, A5XX_GRAS_SC_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_GRAS_SC_DEST_MSAA_CNTL_MSAA_DISABLE);
 
 	/* ---- fd5_emit_state ---- */
-	set(s, REG_A5XX_RB_RENDER_COMPONENTS, A5XX_RB_RENDER_COMPONENTS_RT0(0xf) |
-	    COND(nrt > 1, A5XX_RB_RENDER_COMPONENTS_RT1(0xf)) | COND(nrt > 2, A5XX_RB_RENDER_COMPONENTS_RT2(0xf)) |
-	    COND(nrt > 3, A5XX_RB_RENDER_COMPONENTS_RT3(0xf)) | COND(nrt > 4, A5XX_RB_RENDER_COMPONENTS_RT4(0xf)) |
-	    COND(nrt > 5, A5XX_RB_RENDER_COMPONENTS_RT5(0xf)) | COND(nrt > 6, A5XX_RB_RENDER_COMPONENTS_RT6(0xf)) |
-	    COND(nrt > 7, A5XX_RB_RENDER_COMPONENTS_RT7(0xf)));
+	set(s, REG_A5XX_RB_RENDER_COMPONENTS,
+	    COND(rt_valid_mask & 0x01u, A5XX_RB_RENDER_COMPONENTS_RT0(0xf)) |
+	    COND(rt_valid_mask & 0x02u, A5XX_RB_RENDER_COMPONENTS_RT1(0xf)) |
+	    COND(rt_valid_mask & 0x04u, A5XX_RB_RENDER_COMPONENTS_RT2(0xf)) |
+	    COND(rt_valid_mask & 0x08u, A5XX_RB_RENDER_COMPONENTS_RT3(0xf)) |
+	    COND(rt_valid_mask & 0x10u, A5XX_RB_RENDER_COMPONENTS_RT4(0xf)) |
+	    COND(rt_valid_mask & 0x20u, A5XX_RB_RENDER_COMPONENTS_RT5(0xf)) |
+	    COND(rt_valid_mask & 0x40u, A5XX_RB_RENDER_COMPONENTS_RT6(0xf)) |
+	    COND(rt_valid_mask & 0x80u, A5XX_RB_RENDER_COMPONENTS_RT7(0xf)));
 	set(s, REG_A5XX_RB_ALPHA_CONTROL, 0);
 	set(s, REG_A5XX_RB_STENCIL_CONTROL, 0);
 	set(s, REG_A5XX_GRAS_LRZ_CNTL, 0);
@@ -656,9 +667,10 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 
 	pkt4(s, REG_A5XX_SP_FS_OUTPUT_REG(0), 8);
 	for (i = 0; i < 8; i++) {
-		uint32_t rid = i < fs->ncolor && i < nrt ? fs->color_regid[i] : NOREG;
+		int ok = (i < fs->ncolor) && ((rt_valid_mask & (1u << i)) != 0);
+		uint32_t rid = ok ? fs->color_regid[i] : NOREG;
 
-		out(s, A5XX_SP_FS_OUTPUT_REG_REGID(rid) | COND(i < fs->ncolor && i < nrt && fs->color_half[i], A5XX_SP_FS_OUTPUT_REG_HALF_PRECISION));
+		out(s, A5XX_SP_FS_OUTPUT_REG_REGID(rid) | COND(ok && fs->color_half[i], A5XX_SP_FS_OUTPUT_REG_HALF_PRECISION));
 	}
 	set(s, REG_A5XX_VPC_PACK, A5XX_VPC_PACK_NUMNONPOSVAR(fs->total_in) | A5XX_VPC_PACK_PSIZELOC(psize_loc));
 	pkt4(s, REG_A5XX_VPC_VARYING_INTERP_MODE(0), 8);
@@ -743,18 +755,20 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		const struct lav5_blend * b0 = &r->blend;
 		uint32_t mask = 0;
 
-		for (i = 0; i < nrt; i++) {
-			if ((i == 0 ? r->blend : r->blend_x[i]).enable) {
+		for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
+			int rt_ok = (rt_valid_mask & (1u << i)) != 0;
+			if (rt_ok && (i == 0 ? r->blend : r->blend_x[i]).enable) {
 				mask |= 1u << i;
 			}
 		}
 		for (i = 0; i < A5XX_MAX_RENDER_TARGETS; i++) {
+			int rt_ok = (rt_valid_mask & (1u << i)) != 0;
 			const struct lav5_blend * b = i == 0 ? b0 : &r->blend_x[i];
-			uint32_t ctl = A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(i < nrt ? b->writemask : 0);
+			uint32_t ctl = A5XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY) | A5XX_RB_MRT_CONTROL_COMPONENT_ENABLE(rt_ok ? b->writemask : 0);
 			uint32_t bc = A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(FACTOR_ZERO) |
 			    A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(FACTOR_ONE) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(FACTOR_ZERO);
 
-			if (i < nrt && b->enable) {
+			if (rt_ok && b->enable) {
 				ctl |= A5XX_RB_MRT_CONTROL_BLEND | A5XX_RB_MRT_CONTROL_BLEND2;
 				bc = A5XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(b->rgb_src) | A5XX_RB_MRT_BLEND_CONTROL_RGB_BLEND_OPCODE(b->rgb_op) |
 				    A5XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(b->rgb_dst) | A5XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(b->a_src) |
@@ -779,15 +793,18 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		}
 	}
 
-	/* textures and samplers of the fragment stage (emit_textures): units 0..n-1, n the highest index used + 1 */
+	/* textures and samplers of the fragment stage (emit_textures): cover every slot the shader may read and NEVER emit gpu=0 */
 	{
-		uint32_t nt = 0, ns = 0;
+		uint32_t nt = fs->num_tex_slots <= LAV5_MAX_TEX ? fs->num_tex_slots : LAV5_MAX_TEX;
+		uint32_t ns = 0;
 
-		for (i = 0; i < 16; i++) {
-			if (r->tex[i].valid) {
+		for (i = 0; i < LAV5_MAX_TEX; i++) {
+			if (r->tex[i].valid && i + 1 > nt) {
 				nt = i + 1;
 			}
-			if (r->samp[i].valid) {
+		}
+		for (i = 0; i < 16; i++) {
+			if ((r->samp[i].valid || (fs->sampler_mask & (1u << i))) && i + 1 > ns) {
 				ns = i + 1;
 			}
 		}
@@ -799,11 +816,13 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
 			for (i = 0; i < ns; i++) {
 				const struct lav5_samp * sp = &r->samp[i];
-				enum a5xx_tex_filter mag = sp->mag ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST, min = sp->min ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST;
-				enum a5xx_tex_clamp ws = sp->wrap_s == 0 ? A5XX_TEX_REPEAT : sp->wrap_s == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
-				enum a5xx_tex_clamp wt = sp->wrap_t == 0 ? A5XX_TEX_REPEAT : sp->wrap_t == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
+				int v = sp->valid != 0;
+				enum a5xx_tex_filter mag = (!v || sp->mag) ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST;
+				enum a5xx_tex_filter min = (!v || sp->min) ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST;
+				enum a5xx_tex_clamp ws = !v ? A5XX_TEX_CLAMP_TO_EDGE : sp->wrap_s == 0 ? A5XX_TEX_REPEAT : sp->wrap_s == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
+				enum a5xx_tex_clamp wt = !v ? A5XX_TEX_CLAMP_TO_EDGE : sp->wrap_t == 0 ? A5XX_TEX_REPEAT : sp->wrap_t == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
 
-				out(s, COND(sp->mip_linear, A5XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) | A5XX_TEX_SAMP_0_XY_MAG(mag) |
+				out(s, COND(v && sp->mip_linear, A5XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) | A5XX_TEX_SAMP_0_XY_MAG(mag) |
 				    A5XX_TEX_SAMP_0_XY_MIN(min) | A5XX_TEX_SAMP_0_WRAP_S(ws) | A5XX_TEX_SAMP_0_WRAP_T(wt) |
 				    A5XX_TEX_SAMP_0_WRAP_R(A5XX_TEX_CLAMP_TO_EDGE));
 				out(s, A5XX_TEX_SAMP_1_MIN_LOD(0.0f) | A5XX_TEX_SAMP_1_MAX_LOD(0.125f) | A5XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF);
@@ -819,12 +838,15 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
 			for (i = 0; i < nt; i++) {
 				const struct lav5_tex * t = &r->tex[i];
+				int tok = t->valid && t->gpu != 0 && t->width != 0 && t->height != 0 && t->pitch != 0;
 				uint32_t fmt = t->format ? (t->format - 1) : (t->bgra ? LAV5_FMT_BGRA8 : LAV5_FMT_RGBA8);
 				uint32_t tfmt = TFMT5_8_8_8_8_UNORM;
 				uint32_t sx = A5XX_TEX_X, sy = A5XX_TEX_Y, sz = A5XX_TEX_Z, sw = A5XX_TEX_W;
 				uint32_t srgb = 0;
+				uint32_t tw = tok ? t->width : 1u, th = tok ? t->height : 1u, tp = tok ? t->pitch : 64u;
+				uint64_t tgpu = tok ? t->gpu : r->hole_gpu;
 
-				if (t->valid) {
+				if (tok) {
 					switch (fmt) {
 					case LAV5_FMT_BGRA8:
 						sx = A5XX_TEX_Z; sz = A5XX_TEX_X; break;
@@ -867,11 +889,11 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 				}
 				out(s, A5XX_TEX_CONST_0_FMT(tfmt) | A5XX_TEX_CONST_0_TILE_MODE(TILE5_LINEAR) | A5XX_TEX_CONST_0_SWIZ_X(sx) |
 				    A5XX_TEX_CONST_0_SWIZ_Y(sy) | A5XX_TEX_CONST_0_SWIZ_Z(sz) | A5XX_TEX_CONST_0_SWIZ_W(sw) | srgb);
-				out(s, A5XX_TEX_CONST_1_WIDTH(t->width) | A5XX_TEX_CONST_1_HEIGHT(t->height));
-				out(s, A5XX_TEX_CONST_2_PITCHALIGN(0) | A5XX_TEX_CONST_2_PITCH(t->pitch) | A5XX_TEX_CONST_2_TYPE(A5XX_TEX_2D));
-				out(s, A5XX_TEX_CONST_3_ARRAY_PITCH((t->pitch * t->height + 4095) & ~4095u));
-				out(s, (uint32_t)t->gpu);
-				out(s, (uint32_t)(t->gpu >> 32) | A5XX_TEX_CONST_5_DEPTH(1));
+				out(s, A5XX_TEX_CONST_1_WIDTH(tw) | A5XX_TEX_CONST_1_HEIGHT(th));
+				out(s, A5XX_TEX_CONST_2_PITCHALIGN(0) | A5XX_TEX_CONST_2_PITCH(tp) | A5XX_TEX_CONST_2_TYPE(A5XX_TEX_2D));
+				out(s, A5XX_TEX_CONST_3_ARRAY_PITCH((tp * th + 4095) & ~4095u));
+				out(s, (uint32_t)tgpu);
+				out(s, (uint32_t)(tgpu >> 32) | A5XX_TEX_CONST_5_DEPTH(1));
 				for (j = 0; j < 6; j++) {
 					out(s, 0);
 				}
@@ -885,7 +907,10 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	for (i = 0; i < r->nattr; i++) {
 		const struct lav5_attr * a = &r->attr[i];
 		const struct lav5_vbuf * vb = &r->vbuf[a->buffer];
-		uint64_t base = vb->gpu + a->offset;
+		int vb_ok = vb->gpu != 0 && vb->bytes > a->offset;
+		uint64_t base = vb_ok ? (vb->gpu + a->offset) : r->hole_gpu;
+		uint32_t vbsz = vb_ok ? (uint32_t)(vb->bytes - a->offset) : 64u;
+		uint32_t vbst = vb_ok ? vb->stride : 0u;
 		const struct lav5_io * in = NULL;
 
 		for (j = 0; j < vs->nin; j++) {
@@ -899,8 +924,8 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		pkt4(s, REG_A5XX_VFD_FETCH(nvtx), 4);
 		out(s, (uint32_t)base);
 		out(s, (uint32_t)(base >> 32));
-		out(s, (uint32_t)(vb->bytes - a->offset));
-		out(s, vb->stride);
+		out(s, vbsz);
+		out(s, vbst);
 		pkt4(s, REG_A5XX_VFD_DECODE(nvtx), 2);
 		out(s, A5XX_VFD_DECODE_INSTR_IDX(nvtx) | A5XX_VFD_DECODE_INSTR_FORMAT(a->format) | A5XX_VFD_DECODE_INSTR_SWAP(a->swap) |
 		    A5XX_VFD_DECODE_INSTR_UNK30 | COND(a->is_float, A5XX_VFD_DECODE_INSTR_FLOAT));
