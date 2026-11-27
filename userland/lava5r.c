@@ -451,34 +451,50 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	fs_instroff = 64 - fs_instrlen;
 
 	/* ---- fd5_emit_sysmem_prep ---- */
-	restore(s);
-	pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
-	out(s, 0);
-	pkt7(s, CP_EVENT_WRITE, 1);
-	out(s, PC_CCU_INVALIDATE_COLOR);
-	set(s, REG_A5XX_PC_POWER_CNTL, 1);
-	set(s, REG_A5XX_VFD_POWER_CNTL, 1);
-	wfi(s);
-	set(s, REG_A5XX_RB_CCU_CNTL, 0x10000000);
-	set(s, REG_A5XX_RB_CNTL, A5XX_RB_CNTL_WIDTH(0) | A5XX_RB_CNTL_HEIGHT(0) | A5XX_RB_CNTL_BYPASS);
+	if (!(r->batch_flags & LAV5_BATCH_NO_PROLOGUE)) {
+		restore(s);
+		pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
+		out(s, 0);
+		pkt7(s, CP_EVENT_WRITE, 1);
+		out(s, PC_CCU_INVALIDATE_COLOR);
+		set(s, REG_A5XX_PC_POWER_CNTL, 1);
+		set(s, REG_A5XX_VFD_POWER_CNTL, 1);
+		wfi(s);
+		set(s, REG_A5XX_RB_CCU_CNTL, 0x10000000);
+		set(s, REG_A5XX_RB_CNTL, A5XX_RB_CNTL_WIDTH(0) | A5XX_RB_CNTL_HEIGHT(0) | A5XX_RB_CNTL_BYPASS);
+	} else if (r->batch_flags & LAV5_BATCH_FB_BARRIER) {
+		/* Flush previous draws' colour writes from CCU to memory and invalidate texture caches for fbRead/RTT sampling. */
+		wfi(s);
+		pkt7(s, CP_EVENT_WRITE, 4);
+		out(s, PC_CCU_FLUSH_COLOR_TS);
+		out(s, (uint32_t)r->flush_gpu);
+		out(s, (uint32_t)(r->flush_gpu >> 32));
+		out(s, 0xc0c0c0c1);
+		wfi(s);
+		pkt4(s, REG_A5XX_UCHE_CACHE_INVALIDATE_MIN_LO, 5);
+		out(s, 0); out(s, 0); out(s, 0); out(s, 0); out(s, 0x12);
+		wfi(s);
+	}
 	pkt4(s, REG_A5XX_GRAS_SC_WINDOW_SCISSOR_TL, 2);
 	out(s, A5XX_GRAS_SC_WINDOW_SCISSOR_TL_X(0) | A5XX_GRAS_SC_WINDOW_SCISSOR_TL_Y(0));
 	out(s, A5XX_GRAS_SC_WINDOW_SCISSOR_BR_X(r->rt_width - 1) | A5XX_GRAS_SC_WINDOW_SCISSOR_BR_Y(r->rt_height - 1));
 	pkt4(s, REG_A5XX_RB_RESOLVE_CNTL_1, 2);
 	out(s, A5XX_RB_RESOLVE_CNTL_1_X(0) | A5XX_RB_RESOLVE_CNTL_1_Y(0));
 	out(s, A5XX_RB_RESOLVE_CNTL_2_X(r->rt_width - 1) | A5XX_RB_RESOLVE_CNTL_2_Y(r->rt_height - 1));
-	set(s, REG_A5XX_RB_WINDOW_OFFSET, A5XX_RB_WINDOW_OFFSET_X(0) | A5XX_RB_WINDOW_OFFSET_Y(0));
-	set(s, REG_A5XX_VPC_SO_OVERRIDE, 0);
-	pkt7(s, CP_SET_VISIBILITY_OVERRIDE, 1);
-	out(s, 0x1);
+	if (!(r->batch_flags & LAV5_BATCH_NO_PROLOGUE)) {
+		set(s, REG_A5XX_RB_WINDOW_OFFSET, A5XX_RB_WINDOW_OFFSET_X(0) | A5XX_RB_WINDOW_OFFSET_Y(0));
+		set(s, REG_A5XX_VPC_SO_OVERRIDE, 0);
+		pkt7(s, CP_SET_VISIBILITY_OVERRIDE, 1);
+		out(s, 0x1);
 
-	/* emit_zs with no depth buffer */
-	pkt4(s, REG_A5XX_RB_DEPTH_BUFFER_INFO, 5);
-	out(s, A5XX_RB_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH5_NONE));
-	out(s, 0); out(s, 0); out(s, 0); out(s, 0);
-	set(s, REG_A5XX_GRAS_SU_DEPTH_BUFFER_INFO, A5XX_GRAS_SU_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH5_NONE));
-	zeros(s, REG_A5XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
-	set(s, REG_A5XX_RB_STENCIL_INFO, 0);
+		/* emit_zs with no depth buffer */
+		pkt4(s, REG_A5XX_RB_DEPTH_BUFFER_INFO, 5);
+		out(s, A5XX_RB_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH5_NONE));
+		out(s, 0); out(s, 0); out(s, 0); out(s, 0);
+		set(s, REG_A5XX_GRAS_SU_DEPTH_BUFFER_INFO, A5XX_GRAS_SU_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH5_NONE));
+		zeros(s, REG_A5XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
+		set(s, REG_A5XX_RB_STENCIL_INFO, 0);
+	}
 
 	/* emit_mrt: the colour targets of the pass, the others empty (never write gpu=0 on MRT holes!) */
 	uint32_t rt_valid_mask = 0;
@@ -554,15 +570,17 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 		zeros(s, REG_A5XX_RB_MRT_FLAG_BUFFER(i), 4);
 	}
 	/* emit_msaa: one sample */
-	pkt4(s, REG_A5XX_TPL1_TP_RAS_MSAA_CNTL, 2);
-	out(s, A5XX_TPL1_TP_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
-	out(s, A5XX_TPL1_TP_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_TPL1_TP_DEST_MSAA_CNTL_MSAA_DISABLE);
-	pkt4(s, REG_A5XX_RB_RAS_MSAA_CNTL, 2);
-	out(s, A5XX_RB_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
-	out(s, A5XX_RB_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_RB_DEST_MSAA_CNTL_MSAA_DISABLE);
-	pkt4(s, REG_A5XX_GRAS_SC_RAS_MSAA_CNTL, 2);
-	out(s, A5XX_GRAS_SC_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
-	out(s, A5XX_GRAS_SC_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_GRAS_SC_DEST_MSAA_CNTL_MSAA_DISABLE);
+	if (!(r->batch_flags & LAV5_BATCH_NO_PROLOGUE)) {
+		pkt4(s, REG_A5XX_TPL1_TP_RAS_MSAA_CNTL, 2);
+		out(s, A5XX_TPL1_TP_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
+		out(s, A5XX_TPL1_TP_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_TPL1_TP_DEST_MSAA_CNTL_MSAA_DISABLE);
+		pkt4(s, REG_A5XX_RB_RAS_MSAA_CNTL, 2);
+		out(s, A5XX_RB_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
+		out(s, A5XX_RB_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_RB_DEST_MSAA_CNTL_MSAA_DISABLE);
+		pkt4(s, REG_A5XX_GRAS_SC_RAS_MSAA_CNTL, 2);
+		out(s, A5XX_GRAS_SC_RAS_MSAA_CNTL_SAMPLES(MSAA_ONE));
+		out(s, A5XX_GRAS_SC_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_GRAS_SC_DEST_MSAA_CNTL_MSAA_DISABLE);
+	}
 
 	/* ---- fd5_emit_state ---- */
 	{
@@ -1032,13 +1050,47 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	}
 
 	/* fd5_emit_sysmem_fini, then the flush with a timestamp so that memory holds the pixels */
+	if (!(r->batch_flags & LAV5_BATCH_NO_EPILOGUE)) {
+		pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
+		out(s, 0);
+		wfi(s);
+		pkt7(s, CP_EVENT_WRITE, 4);
+		out(s, PC_CCU_FLUSH_COLOR_TS);
+		out(s, (uint32_t)r->flush_gpu);
+		out(s, (uint32_t)(r->flush_gpu >> 32));
+		out(s, 0xc0c0c0c0);
+		wfi(s);
+		pkt7(s, CP_EVENT_WRITE, 1);
+		out(s, CACHE_FLUSH);
+		wfi(s);
+		pkt7(s, CP_EVENT_WRITE, 4);
+		out(s, CACHE_FLUSH_TS);
+		out(s, (uint32_t)(r->flush_gpu + 4));
+		out(s, (uint32_t)((r->flush_gpu + 4) >> 32));
+		out(s, 0xa4a4a4a4);
+		pkt7(s, CP_WAIT_MEM_WRITES, 0);
+		wfi(s);
+	}
+
+	if (s->over) {
+		*why = "the stream is longer than the service takes";
+		return 0;
+	}
+	return s->n;
+}
+
+size_t
+lav5_emit_render_epilogue(uint32_t * words, size_t cap, uint64_t flush_gpu)
+{
+	struct st st = { words, 0, cap, 0 }, * s = &st;
+
 	pkt7(s, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	out(s, 0);
 	wfi(s);
 	pkt7(s, CP_EVENT_WRITE, 4);
 	out(s, PC_CCU_FLUSH_COLOR_TS);
-	out(s, (uint32_t)r->flush_gpu);
-	out(s, (uint32_t)(r->flush_gpu >> 32));
+	out(s, (uint32_t)flush_gpu);
+	out(s, (uint32_t)(flush_gpu >> 32));
 	out(s, 0xc0c0c0c0);
 	wfi(s);
 	pkt7(s, CP_EVENT_WRITE, 1);
@@ -1046,15 +1098,10 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	wfi(s);
 	pkt7(s, CP_EVENT_WRITE, 4);
 	out(s, CACHE_FLUSH_TS);
-	out(s, (uint32_t)(r->flush_gpu + 4));
-	out(s, (uint32_t)((r->flush_gpu + 4) >> 32));
+	out(s, (uint32_t)(flush_gpu + 4));
+	out(s, (uint32_t)((flush_gpu + 4) >> 32));
 	out(s, 0xa4a4a4a4);
 	pkt7(s, CP_WAIT_MEM_WRITES, 0);
 	wfi(s);
-
-	if (s->over) {
-		*why = "the stream is longer than the service takes";
-		return 0;
-	}
-	return s->n;
+	return s->over ? 0 : s->n;
 }

@@ -140,12 +140,45 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	return o;
 }
 
-/* IOSurface <-> the texture's own memory (the GPU cannot reach an IOSurface's scattered pages): rows copied at the edges */
+/* Fast 64-byte NEON streaming copy for reading Write-Combine GPU memory on arm64 (Kryo 260). */
+static void
+copyRowFast(uint8_t * dst, const uint8_t * src, size_t n)
+{
+#if defined(__aarch64__)
+	size_t chunks = n >> 6;
+	if (chunks != 0) {
+		uint8_t * d = dst;
+		const uint8_t * s = src;
+		size_t c = chunks;
+		__asm__ volatile(
+		    "1:\n"
+		    "ldp q0, q1, [%[s]], #32\n"
+		    "ldp q2, q3, [%[s]], #32\n"
+		    "stp q0, q1, [%[d]], #32\n"
+		    "stp q2, q3, [%[d]], #32\n"
+		    "subs %[c], %[c], #1\n"
+		    "b.ne 1b\n"
+		    : [d] "+r"(d), [s] "+r"(s), [c] "+r"(c)
+		    :
+		    : "v0", "v1", "v2", "v3", "cc", "memory");
+		size_t rem = n & 63u;
+		if (rem != 0) {
+			memcpy(d, s, rem);
+		}
+		return;
+	}
+#endif
+	memcpy(dst, src, n);
+}
+
+/* IOSurface <-> the texture's own memory (the GPU cannot reach an IOSurface's scattered pages): parallel 4-core NEON copy */
 static void
 surfaceCopy(struct texstate * t, BOOL toSurface)
 {
 	size_t sp, rows = t->height, row = (size_t)t->width * t->bpp;
 	uint8_t * base;
+	uint8_t * gpuCpu = (uint8_t *)t->b.cpu;
+	size_t pitch = t->pitch;
 
 	if (IOSurfaceLock(t->surface, toSurface ? 0 : kIOSurfaceLockReadOnly, NULL) != 0) {
 		lavlog("IOSurfaceLock failed");
@@ -159,11 +192,36 @@ surfaceCopy(struct texstate * t, BOOL toSurface)
 	if (sp < row) {
 		row = sp;
 	}
-	for (size_t y = 0; y < rows; y++) {
-		if (toSurface) {
-			memcpy(base + y * sp, (uint8_t *)t->b.cpu + y * t->pitch, row);
-		} else {
-			memcpy((uint8_t *)t->b.cpu + y * t->pitch, base + y * sp, row);
+	if (rows >= 64 && rows * row >= 131072) {
+		const size_t nthr = 4;
+		dispatch_apply(nthr, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t band) {
+			size_t y0 = (rows * band) / nthr;
+			size_t y1 = (rows * (band + 1)) / nthr;
+			if (toSurface) {
+				if (sp == pitch && row == sp) {
+					copyRowFast(base + y0 * sp, gpuCpu + y0 * pitch, (y1 - y0) * row);
+				} else {
+					for (size_t y = y0; y < y1; y++) {
+						copyRowFast(base + y * sp, gpuCpu + y * pitch, row);
+					}
+				}
+			} else {
+				if (sp == pitch && row == sp) {
+					memcpy(gpuCpu + y0 * pitch, base + y0 * sp, (y1 - y0) * row);
+				} else {
+					for (size_t y = y0; y < y1; y++) {
+						memcpy(gpuCpu + y * pitch, base + y * sp, row);
+					}
+				}
+			}
+		});
+	} else {
+		for (size_t y = 0; y < rows; y++) {
+			if (toSurface) {
+				copyRowFast(base + y * sp, gpuCpu + y * pitch, row);
+			} else {
+				memcpy(gpuCpu + y * pitch, base + y * sp, row);
+			}
 		}
 	}
 	IOSurfaceUnlock(t->surface, toSurface ? 0 : kIOSurfaceLockReadOnly, NULL);
@@ -592,7 +650,7 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564338u
+#define PIPE_CACHE_MAGIC 0x4c564339u
 
 static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
@@ -1814,30 +1872,139 @@ bindStage(struct lav5_binding * out, struct lav5_vbuf * vb, id * bufs, uint64_t 
 
 static struct lbuf gPvt[2];     /* private memory of the vertex and the fragment stage, grown on demand */
 
-static BOOL
-runDraw(struct op * op)
+#define DRAW_BATCH_RESERVE_EPILOGUE 24u
+#define DRAW_BATCH_MAX_RT 32u
+
+struct draw_batch {
+	uint32_t words[STREAM_WORDS];
+	size_t len;
+	size_t boff;
+	uint32_t draws;
+	uint32_t total_draws;
+	uint32_t total_submits;
+	uint64_t written_rt[DRAW_BATCH_MAX_RT];
+	uint32_t nwritten;
+	struct lav5_render r;
+};
+
+static struct draw_batch gDrawBatch; /* protected by gGPULock */
+
+static void
+drawBatchReset(struct draw_batch * b)
 {
+	b->len = 0;
+	b->boff = 0;
+	b->draws = 0;
+	b->nwritten = 0;
+}
+
+static void
+drawBatchBeginCB(void)
+{
+	drawBatchReset(&gDrawBatch);
+	gDrawBatch.total_draws = 0;
+	gDrawBatch.total_submits = 0;
+}
+
+static void
+drawBatchStats(uint32_t * draws, uint32_t * submits)
+{
+	if (draws != NULL) *draws = gDrawBatch.total_draws;
+	if (submits != NULL) *submits = gDrawBatch.total_submits;
+}
+
+static BOOL
+drawBatchFlushImpl(struct draw_batch * b)
+{
+	size_t ep;
+	BOOL ok;
+
+	if (b->len == 0) {
+		return YES;
+	}
+	ep = lav5_emit_render_epilogue(b->words + b->len, STREAM_WORDS - b->len, gStream.gpu + SCRATCH_OFFSET + 64);
+	if (ep == 0) {
+		lavlog("draw batch epilogue overflow (len %zu)", b->len);
+		drawBatchReset(b);
+		return NO;
+	}
+	ok = lavSubmit(b->words, b->len + ep);
+	b->total_submits++;
+	if (!ok) {
+		lavlog("draw batch (%u draws, %zu words) FAILED", b->draws, b->len + ep);
+	}
+	drawBatchReset(b);
+	return ok;
+}
+
+static BOOL
+drawBatchFlush(void)
+{
+	return drawBatchFlushImpl(&gDrawBatch);
+}
+
+static BOOL
+drawBatchHasWrittenRT(const struct draw_batch * b, uint64_t gpu)
+{
+	if (gpu == 0) {
+		return NO;
+	}
+	for (uint32_t i = 0; i < b->nwritten; i++) {
+		if (b->written_rt[i] == gpu) {
+			return YES;
+		}
+	}
+	return NO;
+}
+
+static void
+drawBatchMarkRT(struct draw_batch * b, uint64_t gpu)
+{
+	if (gpu == 0 || drawBatchHasWrittenRT(b, gpu)) {
+		return;
+	}
+	if (b->nwritten < DRAW_BATCH_MAX_RT) {
+		b->written_rt[b->nwritten++] = gpu;
+	}
+}
+
+static BOOL
+drawBatchAdd(struct op * op)
+{
+	struct draw_batch * b = &gDrawBatch;
 	struct draw * d = op->draw;
 	struct rpipe * rp = STATE(d->pipeline, struct rpipe);
 	struct texstate * t = STATE(d->target, struct texstate);
-	struct lav5_render * r = calloc(1, sizeof(*r));
-	uint32_t * w;
+	struct lav5_render * r = &b->r;
 	const char * why = NULL;
-	size_t n, boff = 0;
-	BOOL ok;
+	size_t n, saved_boff;
+	BOOL need_barrier = NO;
 	const char * name = rp->vs.k.name[0] ? rp->vs.k.name : "(render)";
 
 	if (d->count == 0 || d->instances == 0) {
-		free(r);
 		return YES;
 	}
 	if (gBytes.handle == 0 && !lavBufNew(65536, &gBytes)) {
-		free(r);
 		return NO;
 	}
-	if (!bindStage(r->vs_buf, r->vbuf, d->vbuf, d->voff, d->vbytes, d->vblen, rp->stride, &boff, name) ||
-	    !bindStage(r->fs_buf, NULL, d->fbuf, d->foff, d->fbytes, d->fblen, NULL, &boff, name)) {
-		free(r);
+	/* Flush first if gBytes scratch is running low or PM4 batch buffer is nearly full. */
+	if (b->len > 0 && (b->boff + 8192u > gBytes.len || b->len + 700u + DRAW_BATCH_RESERVE_EPILOGUE > STREAM_WORDS)) {
+		if (!drawBatchFlushImpl(b)) {
+			return NO;
+		}
+	}
+retry:;
+	memset(r, 0, sizeof(*r));
+	saved_boff = b->boff;
+	if (!bindStage(r->vs_buf, r->vbuf, d->vbuf, d->voff, d->vbytes, d->vblen, rp->stride, &b->boff, name) ||
+	    !bindStage(r->fs_buf, NULL, d->fbuf, d->foff, d->fbytes, d->fblen, NULL, &b->boff, name)) {
+		if (b->len > 0) {
+			b->boff = saved_boff;
+			if (!drawBatchFlushImpl(b)) {
+				return NO;
+			}
+			goto retry;
+		}
 		return NO;
 	}
 	{
@@ -1851,7 +2018,6 @@ runDraw(struct op * op)
 			r->fs_code = sp->fcode.gpu;
 		} else {
 			if (rp->fs_deferred && !pipeEnsureBaseLocked(rp)) {
-				free(r);
 				return NO;
 			}
 			r->vs = &rp->vs;
@@ -1873,10 +2039,13 @@ runDraw(struct op * op)
 
 			if (!lavBufNew(bytes, &nb)) {
 				lavlog("draw of %s: no memory for %u bytes of private memory", name, bytes);
-				free(r);
 				return NO;
 			}
 			if (gPvt[i].handle != 0) {
+				if (b->len > 0 && !drawBatchFlushImpl(b)) {
+					lavBufFree(&nb);
+					return NO;
+				}
 				lavBufFree(&gPvt[i]);
 			}
 			gPvt[i] = nb;
@@ -1904,7 +2073,6 @@ runDraw(struct op * op)
 
 		if (d->ioff >= ib->b.len) {
 			lavlog("indexed draw: the index buffer offset is past its end");
-			free(r);
 			return NO;
 		}
 		r->index_gpu = ib->b.gpu + d->ioff;
@@ -1928,12 +2096,16 @@ runDraw(struct op * op)
 	}
 	r->rt[0] = (struct lav5_rt){ r->rt_gpu, r->rt_pitch, r->rt_format, 1 };
 	memcpy(r->blend_color, d->blend_color, sizeof(r->blend_color));
+	need_barrier = (b->len > 0 && r->fs->fb_read != 0);
 	for (int i = 0; i < 16; i++) {
 		if (d->ftex[i] != nil) {
 			struct texstate * ts = STATE(d->ftex[i], struct texstate);
 			uint32_t tf = lavFmtFromMetal(ts->format, NULL);
 
 			surfacePullIfDirty(ts);
+			if (b->len > 0 && drawBatchHasWrittenRT(b, ts->b.gpu)) {
+				need_barrier = YES;
+			}
 			r->tex[i] = (struct lav5_tex){ ts->b.gpu, ts->width, ts->height, ts->pitch,
 			    (ts->format == PF_BGRA8 || ts->format == PF_BGRA8_SRGB) ? 1u : 0u, 1u, tf + 1u };
 		}
@@ -1953,40 +2125,36 @@ runDraw(struct op * op)
 			struct texstate * ts = STATE(srcTex, struct texstate);
 			uint32_t tf = lavFmtFromMetal(ts->format, NULL);
 
+			if (b->len > 0 && drawBatchHasWrittenRT(b, ts->b.gpu)) {
+				need_barrier = YES;
+			}
 			r->tex[i] = (struct lav5_tex){ ts->b.gpu, ts->width, ts->height, ts->pitch,
 			    (ts->format == PF_BGRA8 || ts->format == PF_BGRA8_SRGB) ? 1u : 0u, 1u, tf + 1u };
 		}
 	}
 	r->flush_gpu = gStream.gpu + SCRATCH_OFFSET + 64;
 	r->hole_gpu = gStream.gpu + 0x9000u;
-	w = malloc(STREAM_WORDS * 4);
-	n = lav5_build_render(w, STREAM_WORDS, r, &why);
+	r->batch_flags = LAV5_BATCH_NO_EPILOGUE | (b->len > 0 ? LAV5_BATCH_NO_PROLOGUE : 0u) |
+	    (need_barrier ? LAV5_BATCH_FB_BARRIER : 0u);
+	n = lav5_build_render(b->words + b->len, STREAM_WORDS - b->len - DRAW_BATCH_RESERVE_EPILOGUE, r, &why);
 	if (n == 0) {
+		if (b->len > 0) {
+			b->boff = saved_boff;
+			if (!drawBatchFlushImpl(b)) {
+				return NO;
+			}
+			goto retry;
+		}
 		lavlog("draw refused: %s", why != NULL ? why : "?");
-		free(w);
-		free(r);
 		return NO;
 	}
-	{
-		static uint32_t drawLog;
-
-		if (drawLog < 8 && (r->nrt > 1 || r->fs->fb_read || r->fs->k.ubo_ptrs_vec4 >= 0)) {
-			lavlog("draw #%u %s+%s nrt=%u rt0=%#llx(%ux%u) rt1=%#llx fb=%u ubo=%u(p=%d) tex=%u cnt=%u w=%zu",
-			    drawLog, [STATE(rp->vfn, struct fnstate)->name UTF8String], [STATE(rp->ffn, struct fnstate)->name UTF8String],
-			    r->nrt, (unsigned long long)r->rt_gpu, r->rt_width, r->rt_height, (unsigned long long)r->rt[1].gpu,
-			    r->fs->fb_read, r->fs->k.num_ubos, r->fs->k.ubo_ptrs_vec4, r->fs->num_tex_slots, d->count, n);
-			drawLog++;
+	b->len += n;
+	b->draws++;
+	b->total_draws++;
+	for (uint32_t i = 0; i < r->nrt; i++) {
+		if (r->rt[i].valid) {
+			drawBatchMarkRT(b, r->rt[i].gpu);
 		}
 	}
-	ok = lavSubmit(w, n);
-	if (!ok) {
-		lavlog("draw %s+%s (fs %u words, rt %ux%u fmt %u): %u vertices x %u instances, prim %u, %zu words, FAILED",
-		    [STATE(rp->vfn, struct fnstate)->name UTF8String], [STATE(rp->ffn, struct fnstate)->name UTF8String],
-		    r->fs->k.nwords, r->rt_width, r->rt_height, t->format, d->count, d->instances, d->prim, n);
-	} else {
-		lavdbg("draw: %u vertices x %u instances, prim %u, %zu words, done", d->count, d->instances, d->prim, n);
-	}
-	free(w);
-	free(r);
-	return ok;
+	return YES;
 }

@@ -2243,13 +2243,27 @@ typedef void (^LavHandler)(id);
 static void cbSyncSurfaces(struct cbstate * st);
 static BOOL runClear(struct op * op);
 static BOOL runCopyTex(struct op * op);
-static BOOL runDraw(struct op * op);
+static void drawBatchBeginCB(void);
+static BOOL drawBatchFlush(void);
+static BOOL drawBatchAdd(struct op * op);
+static void drawBatchStats(uint32_t * draws, uint32_t * submits);
+
+static uint64_t
+lavNowUs(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)(ts.tv_nsec / 1000);
+}
 
 static void
 cbCommit(id self, __unused SEL _cmd)
 {
 	struct cbstate * st = STATE(self, struct cbstate);
 	BOOL ok = YES;
+	uint64_t t0, t1, t2;
+	static uint32_t perfLog;
 
 	if (st->status >= 2) {
 		return;
@@ -2260,7 +2274,17 @@ cbCommit(id self, __unused SEL _cmd)
 	}
 	st->status = 3;                         /* Scheduled */
 	pthread_mutex_lock(&gGPULock);
+	t0 = lavNowUs();
+	drawBatchBeginCB();
 	for (size_t i = 0; i < st->nops && ok; i++) {
+		if (st->ops[i].kind == OP_DRAW) {
+			ok = drawBatchAdd(&st->ops[i]);
+			continue;
+		}
+		ok = drawBatchFlush();
+		if (!ok) {
+			break;
+		}
 		switch (st->ops[i].kind) {
 		case OP_FILL:
 			ok = runFill(&st->ops[i]);
@@ -2274,16 +2298,28 @@ cbCommit(id self, __unused SEL _cmd)
 		case OP_CLEAR:
 			ok = runClear(&st->ops[i]);
 			break;
-		case OP_DRAW:
-			ok = runDraw(&st->ops[i]);
-			break;
 		default:
 			ok = runDispatch(&st->ops[i]);
 			break;
 		}
 	}
 	if (ok) {
+		ok = drawBatchFlush();
+	}
+	t1 = lavNowUs();
+	if (ok) {
 		cbSyncSurfaces(st);
+	}
+	t2 = lavNowUs();
+	if (ok && perfLog < 16) {
+		uint32_t nd = 0, ns = 0;
+
+		drawBatchStats(&nd, &ns);
+		if (nd >= 4) {
+			lavlog("perf #%u: %u draws in %u submits (%llu ms), sync %llu ms",
+			    perfLog, nd, ns, (unsigned long long)((t1 - t0) / 1000), (unsigned long long)((t2 - t1) / 1000));
+			perfLog++;
+		}
 	}
 	pthread_mutex_unlock(&gGPULock);
 	cbFreeOps(st);

@@ -192,7 +192,12 @@ struct lav5_render {
 	uint32_t nrt;                               /* colour targets of the pass; 0: just the rt_* one. rt[0] is then rt_*, rt[1..] the others */
 	struct lav5_rt rt[8];
 	struct lav5_blend blend_x[8];               /* blend of targets 1.. ([0] is `blend`) */
+	uint32_t batch_flags;                       /* LAV5_BATCH_* for multi-draw PM4 batching */
 };
+
+#define LAV5_BATCH_NO_PROLOGUE  1u              /* skip restore/zs/msaa (already emitted by earlier draw in same stream) */
+#define LAV5_BATCH_NO_EPILOGUE  2u              /* skip end-of-draw cache flush (batch flusher emits it once) */
+#define LAV5_BATCH_FB_BARRIER   4u              /* emit in-stream CCU flush + UCHE invalidate before this draw */
 
 /* the stream of one draw into one colour target, in sysmem (bypass) mode; 0 with *why when refused */
 /* why one stage cannot be drawn with, or NULL (checked again by lav5_build_render) */
@@ -202,6 +207,7 @@ const char * lav5_refuse_stage(const struct lav5_stage * s);
 uint32_t lav5_pvtmem_bytes(const struct lav5_stage * s);
 
 size_t lav5_build_render(uint32_t * out, size_t cap, const struct lav5_render * r, const char ** why);
+size_t lav5_emit_render_epilogue(uint32_t * out, size_t cap, uint64_t flush_gpu);
 
 /* the words of the stream; returns how many, 0 with *why set (a string literal) when the dispatch is refused */
 size_t lav5_build(uint32_t * out, size_t cap, const struct lav5_dispatch * d, const char ** why);

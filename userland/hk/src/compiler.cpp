@@ -2046,6 +2046,15 @@ std::unique_ptr<CompiledStage> compileStageOnce(const void* bitcode, size_t size
     if (!fillKernel(t, home, highestSampler, why)) return nullptr;
     if (!fillStage(t, classes, out->stage, why)) return nullptr;
     phase("fillKernel, fillStage");
+    // ir3_finalize_nir + ir3_compile_shader_nir eliminate dead texture ops (e.g. CA's null_texture at slot 15
+    // when function constants collapse the uber-shader), so clamp numTextureSlots to the live ir3 count.
+    if (t.v != nullptr && t.v->num_samp < out->stage.k.numTextureSlots) {
+        out->stage.k.numTextureSlots = uint32_t(t.v->num_samp);
+        if (t.v->num_samp == 0) {
+            out->stage.k.samplerMask = 0;
+            out->stage.k.numSamp = 0;
+        }
+    }
     // the fetch slots lowerFbRead made: sampled 2D floats the draw fills with the targets, and a stage that reads its
     // targets (the barrier before its draws keys on fbRead, which ir3 no longer sees: it has no txf_ms_fb left)
     for (uint32_t i = 0; i < kMaxTextureSlots; i++) {
