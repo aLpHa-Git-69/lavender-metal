@@ -124,13 +124,16 @@ extern "C" int lavcc_compile(struct lavcc_lib* l, const char* name, const struct
     }
     out->imm_vec4 = c.immediatesOffsetVec4;
     out->dp_vec4 = c.driverParamsOffsetVec4;
+    out->ubo_ptrs_vec4 = c.uboPtrsOffsetVec4;
     out->num_ubos = c.numUbos;
     out->num_ssbos = c.numSsbos;
     out->num_ibos = c.numIbos;
     out->ssbo_undeclared = c.ssboUndeclared;
     out->shared_size = c.sharedSize > k->threadgroupBytes ? c.sharedSize : k->threadgroupBytes;
     out->pvtmem_size = c.pvtmemSize;
+    out->const_data_offset = c.constantDataOffset;
     out->const_data_size = c.constantDataSize;
+    out->const_data_ubo = c.constantDataUbo;
     out->nranges = c.numUboRanges < LAV5_MAX_RANGES ? c.numUboRanges : LAV5_MAX_RANGES;
     for (uint32_t i = 0; i < out->nranges; i++) {
         out->ranges[i] = { c.uboRanges[i].block, c.uboRanges[i].offsetVec4, c.uboRanges[i].startDword, c.uboRanges[i].sizeDwords };
@@ -175,12 +178,15 @@ static void flatten(const Kernel& c, const std::vector<Resource>& resources, str
     }
     out->imm_vec4 = c.immediatesOffsetVec4;
     out->dp_vec4 = c.driverParamsOffsetVec4;
+    out->ubo_ptrs_vec4 = c.uboPtrsOffsetVec4;
     out->num_ubos = c.numUbos;
     out->num_ssbos = c.numSsbos;
     out->num_ibos = c.numIbos;
     out->shared_size = c.sharedSize;
     out->pvtmem_size = c.pvtmemSize;
+    out->const_data_offset = c.constantDataOffset;
     out->const_data_size = c.constantDataSize;
+    out->const_data_ubo = c.constantDataUbo;
     out->nranges = c.numUboRanges < LAV5_MAX_RANGES ? c.numUboRanges : LAV5_MAX_RANGES;
     for (uint32_t i = 0; i < out->nranges; i++)
         out->ranges[i] = { c.uboRanges[i].block, c.uboRanges[i].offsetVec4, c.uboRanges[i].startDword, c.uboRanges[i].sizeDwords };

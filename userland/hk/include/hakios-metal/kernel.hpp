@@ -168,6 +168,8 @@ struct Kernel {
     // Nothing bound there is no refusal: the dispatch puts its hole descriptor in it. Last, and zero when a fixture
     // written before it leaves it out: every slot the kernel's.
     uint32_t ssboUndeclared = 0;
+    // Pre-a6xx (Adreno 5xx): vec4 offset in const file where ir3 reads 64-bit UBO base pointers (IR3_CONST_ALLOC_UBO_PTRS); -1 when none.
+    int32_t uboPtrsOffsetVec4 = -1;
 };
 
 } // namespace hakios::metal

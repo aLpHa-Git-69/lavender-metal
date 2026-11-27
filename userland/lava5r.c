@@ -230,14 +230,13 @@ load_consts(struct st * s, enum a4xx_state_block sb, unsigned vec4, const uint32
 	}
 }
 
-/* a stage's constants: the pushed ranges of the buffers bound for it, the immediates, then its driver params */
+/* a stage's constants: the pushed ranges of the buffers bound for it, a5xx UBO pointers, the immediates, then its driver params */
 static const char *
 emit_stage_consts(struct st * s, enum a4xx_state_block sb, const struct lav5_kernel * k, const struct lav5_binding * buf,
-    const uint32_t * dp, unsigned dpn)
+    const uint32_t * dp, unsigned dpn, uint64_t code_gpu, uint64_t hole_gpu)
 {
 	for (unsigned i = 0; i < k->nranges; i++) {
 		const struct lav5_range * r = &k->ranges[i];
-		const struct lav5_binding * b = r->block < LAV5_MAX_BUFFERS ? &buf[r->block] : NULL;
 		uint32_t tmp[256];
 
 		if (r->size_dwords == 0 || r->size_dwords % 4 != 0 || r->size_dwords > 256) {
@@ -246,18 +245,65 @@ emit_stage_consts(struct st * s, enum a4xx_state_block sb, const struct lav5_ker
 		if (r->offset_vec4 + r->size_dwords / 4 > k->constlen) {
 			return "a constant range runs past the constant file";
 		}
-		if (b == NULL || b->cpu == NULL) {
-			return "a constant range reads a buffer nothing is bound at";
-		}
 		memset(tmp, 0, r->size_dwords * 4);
-		for (unsigned j = 0; j < r->size_dwords; j++) {
-			uint64_t byte = (uint64_t)(r->start_dword + j) * 4;
+		if (k->const_data_ubo != 0 && r->block == k->const_data_ubo - 1) {
+			for (unsigned j = 0; j < r->size_dwords; j++) {
+				uint64_t byte = (uint64_t)(r->start_dword + j) * 4;
+				uint64_t widx = (uint64_t)(k->const_data_offset / 4) + r->start_dword + j;
 
-			if (byte + 4 <= b->bytes) {
-				memcpy(&tmp[j], (const uint8_t *)b->cpu + byte, 4);
+				if (byte + 4 <= k->const_data_size && widx < k->nwords) {
+					tmp[j] = k->words[widx];
+				}
+			}
+			load_consts(s, sb, r->offset_vec4, tmp, r->size_dwords);
+			continue;
+		}
+		{
+			const struct lav5_binding * b = r->block < LAV5_MAX_BUFFERS ? &buf[r->block] : NULL;
+
+			if (b != NULL && b->cpu != NULL) {
+				for (unsigned j = 0; j < r->size_dwords; j++) {
+					uint64_t byte = (uint64_t)(r->start_dword + j) * 4;
+
+					if (byte + 4 <= b->bytes) {
+						memcpy(&tmp[j], (const uint8_t *)b->cpu + byte, 4);
+					}
+				}
 			}
 		}
 		load_consts(s, sb, r->offset_vec4, tmp, r->size_dwords);
+	}
+	/* a5xx non-pushed UBO base pointers (Mesa ir3_const.h ir3_emit_ubos / fd5_emit_const_ptrs): 2 dwords per UBO, padded to vec4 */
+	if (k->ubo_ptrs_vec4 >= 0 && k->num_ubos > 0) {
+		unsigned num = k->num_ubos <= 32 ? k->num_ubos : 32;
+		unsigned anum = (num + 1u) & ~1u;
+		uint32_t ptrs[64];
+
+		if ((uint32_t)k->ubo_ptrs_vec4 < k->constlen) {
+			unsigned max_vec4 = k->constlen - (uint32_t)k->ubo_ptrs_vec4;
+			if (anum / 2 > max_vec4) {
+				anum = max_vec4 * 2;
+				if (num > anum) {
+					num = anum;
+				}
+			}
+			for (unsigned u = 0; u < anum; u++) {
+				uint64_t a = hole_gpu;
+
+				if (u < num) {
+					if (k->const_data_ubo != 0 && u == k->const_data_ubo - 1 && code_gpu != 0) {
+						a = code_gpu + k->const_data_offset;
+					} else if (u < LAV5_MAX_BUFFERS && buf[u].gpu != 0) {
+						a = buf[u].gpu;
+					}
+				}
+				ptrs[2 * u] = (uint32_t)a;
+				ptrs[2 * u + 1] = (uint32_t)(a >> 32);
+			}
+			if (anum > 0) {
+				load_consts(s, sb, (uint32_t)k->ubo_ptrs_vec4, ptrs, anum * 2);
+			}
+		}
 	}
 	if (k->nimm != 0) {
 		unsigned n = (k->nimm + 3) & ~3u;
@@ -317,7 +363,7 @@ lav5_refuse_stage(const struct lav5_stage * s)
 	if (s->k.shared_size) {
 		return "the stage uses threadgroup memory";
 	}
-	if (s->k.const_data_size) {
+	if (s->k.const_data_size && s->k.const_data_ubo == 0) {
 		return "the stage has a constant data table";
 	}
 	return NULL;
@@ -489,6 +535,13 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 			out(s, A5XX_RB_MRT_ARRAY_PITCH(pitch * r->rt_height));
 			out(s, (uint32_t)gpu);
 			out(s, (uint32_t)(gpu >> 32));
+		} else if (i < nrt && r->hole_gpu != 0) {
+			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(RB5_R8G8B8A8_UNORM) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
+			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX));
+			out(s, A5XX_RB_MRT_PITCH(64));
+			out(s, A5XX_RB_MRT_ARRAY_PITCH(64));
+			out(s, (uint32_t)r->hole_gpu);
+			out(s, (uint32_t)(r->hole_gpu >> 32));
 		} else {
 			out(s, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(0) | A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(TILE5_LINEAR) |
 			    A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX));
@@ -512,15 +565,16 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	out(s, A5XX_GRAS_SC_DEST_MSAA_CNTL_SAMPLES(MSAA_ONE) | A5XX_GRAS_SC_DEST_MSAA_CNTL_MSAA_DISABLE);
 
 	/* ---- fd5_emit_state ---- */
-	set(s, REG_A5XX_RB_RENDER_COMPONENTS,
-	    COND(rt_valid_mask & 0x01u, A5XX_RB_RENDER_COMPONENTS_RT0(0xf)) |
-	    COND(rt_valid_mask & 0x02u, A5XX_RB_RENDER_COMPONENTS_RT1(0xf)) |
-	    COND(rt_valid_mask & 0x04u, A5XX_RB_RENDER_COMPONENTS_RT2(0xf)) |
-	    COND(rt_valid_mask & 0x08u, A5XX_RB_RENDER_COMPONENTS_RT3(0xf)) |
-	    COND(rt_valid_mask & 0x10u, A5XX_RB_RENDER_COMPONENTS_RT4(0xf)) |
-	    COND(rt_valid_mask & 0x20u, A5XX_RB_RENDER_COMPONENTS_RT5(0xf)) |
-	    COND(rt_valid_mask & 0x40u, A5XX_RB_RENDER_COMPONENTS_RT6(0xf)) |
-	    COND(rt_valid_mask & 0x80u, A5XX_RB_RENDER_COMPONENTS_RT7(0xf)));
+	{
+		uint32_t rc = 0;
+
+		for (i = 0; i < 8; i++) {
+			if ((rt_valid_mask & (1u << i)) != 0 && i < fs->ncolor && VALIDREG(fs->color_regid[i])) {
+				rc |= 0xfu << (4 * i);
+			}
+		}
+		set(s, REG_A5XX_RB_RENDER_COMPONENTS, rc);
+	}
 	set(s, REG_A5XX_RB_ALPHA_CONTROL, 0);
 	set(s, REG_A5XX_RB_STENCIL_CONTROL, 0);
 	set(s, REG_A5XX_GRAS_LRZ_CNTL, 0);
@@ -530,15 +584,24 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	set(s, REG_A5XX_RB_DEPTH_PLANE_CNTL, 0);
 	set(s, REG_A5XX_GRAS_SU_DEPTH_PLANE_CNTL, 0);
 
-	/* scissor (Metal's, top-left origin: the same numbers) */
-	pkt4(s, REG_A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0, 2);
-	out(s, A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_X(r->scissor[0]) | A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_Y(r->scissor[1]));
-	out(s, A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_X(r->scissor[0] + r->scissor[2] - 1) |
-	    A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_Y(r->scissor[1] + r->scissor[3] - 1));
-	pkt4(s, REG_A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0, 2);
-	out(s, A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_X(r->scissor[0]) | A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_Y(r->scissor[1]));
-	out(s, A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_X(r->scissor[0] + r->scissor[2] - 1) |
-	    A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_Y(r->scissor[1] + r->scissor[3] - 1));
+	/* scissor (Metal's, top-left origin: clamped to target bounds so 0-width/height never underflows) */
+	{
+		uint32_t sx0 = r->scissor[0] < r->rt_width ? r->scissor[0] : (r->rt_width ? r->rt_width - 1 : 0);
+		uint32_t sy0 = r->scissor[1] < r->rt_height ? r->scissor[1] : (r->rt_height ? r->rt_height - 1 : 0);
+		uint32_t sw = r->scissor[2] ? r->scissor[2] : 1u;
+		uint32_t sh = r->scissor[3] ? r->scissor[3] : 1u;
+		uint32_t sx1 = sx0 + sw - 1;
+		uint32_t sy1 = sy0 + sh - 1;
+
+		if (r->rt_width && sx1 >= r->rt_width) sx1 = r->rt_width - 1;
+		if (r->rt_height && sy1 >= r->rt_height) sy1 = r->rt_height - 1;
+		pkt4(s, REG_A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0, 2);
+		out(s, A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_X(sx0) | A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_Y(sy0));
+		out(s, A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_X(sx1) | A5XX_GRAS_SC_SCREEN_SCISSOR_TL_0_Y(sy1));
+		pkt4(s, REG_A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0, 2);
+		out(s, A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_X(sx0) | A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_Y(sy0));
+		out(s, A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_X(sx1) | A5XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0_Y(sy1));
+	}
 
 	/* viewport: NDC y up to a window y down (Metal's), z in [0, 1] */
 	(void)vp_x; (void)vp_y;
@@ -628,7 +691,7 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	out(s, A5XX_HLSQ_CONTROL_2_REG_FACEREGID(fs->face_regid) | A5XX_HLSQ_CONTROL_2_REG_SAMPLEID(NOREG) |
 	    A5XX_HLSQ_CONTROL_2_REG_SAMPLEMASK(NOREG) | A5XX_HLSQ_CONTROL_2_REG_CENTERRHW(fs->ij_regid[3]));
 	out(s, A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_PIXEL(fs->ij_regid[0]) | A5XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_PIXEL(fs->ij_regid[4]) |
-	    A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(fs->ij_regid[2]) | A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(fs->ij_regid[5]));
+	    A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(fs->ij_regid[2]) | A5XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_CENTROID(fs->ij_regid[5]));
 	out(s, A5XX_HLSQ_CONTROL_4_REG_XYCOORDREGID(fs->frag_coord_regid) |
 	    A5XX_HLSQ_CONTROL_4_REG_ZWCOORDREGID(VALIDREG(fs->frag_coord_regid) ? fs->frag_coord_regid + 2 : NOREG) |
 	    A5XX_HLSQ_CONTROL_4_REG_IJ_PERSP_SAMPLE(fs->ij_regid[1]) | A5XX_HLSQ_CONTROL_4_REG_IJ_LINEAR_SAMPLE(fs->ij_regid[6]));
@@ -711,8 +774,8 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 	{
 		uint32_t dp[8] = { 0, r->first, r->base_instance, 0, 0, 0, 0, 0 };
 
-		if ((e = emit_stage_consts(s, SB4_VS_SHADER, &vs->k, r->vs_buf, dp, 8)) != NULL ||
-		    (e = emit_stage_consts(s, SB4_FS_SHADER, &fs->k, r->fs_buf, NULL, 0)) != NULL) {
+		if ((e = emit_stage_consts(s, SB4_VS_SHADER, &vs->k, r->vs_buf, dp, 8, r->vs_code, r->hole_gpu)) != NULL ||
+		    (e = emit_stage_consts(s, SB4_FS_SHADER, &fs->k, r->fs_buf, NULL, 0, r->fs_code, r->hole_gpu)) != NULL) {
 			*why = e;
 			return 0;
 		}
@@ -898,6 +961,11 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 					out(s, 0);
 				}
 			}
+		}
+		if (r->hole_gpu != 0) {
+			pkt4(s, REG_A5XX_TPL1_TP_BORDER_COLOR_BASE_ADDR_LO, 2);
+			out(s, (uint32_t)r->hole_gpu);
+			out(s, (uint32_t)(r->hole_gpu >> 32));
 		}
 		set(s, REG_A5XX_TPL1_FS_TEX_COUNT, nt);
 	}

@@ -108,6 +108,8 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 		len = len + len / 2;
 	}
 	if (len > (16u << 20)) {
+		lavlog("newTexture %llux%llu fmt %llu len %zu > 16MB refused", (unsigned long long)w, (unsigned long long)h,
+		    (unsigned long long)fmt, len);
 		return nil;
 	}
 	o = makeObject(gTextureClass, sizeof(struct texstate));
@@ -590,7 +592,7 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564337u
+#define PIPE_CACHE_MAGIC 0x4c564338u
 
 static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
@@ -883,8 +885,10 @@ makeRenderPipeline(id desc, NSError ** err)
 	}
 	rp->vfn = [vf retain];
 	rp->ffn = [ff retain];
-	lavlog("render pipeline %s + %s: %u+%u words%s, %u attributes%s", [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords,
-	    rp->fs.k.nwords, rp->fs_deferred ? " (deferred)" : "", rp->nattr, rp->fs.fb_read ? " (fbRead)" : "");
+	lavlog("render pipeline %s + %s: %u+%u words%s, %u attrs, ubo=%u(r=%u,p=%d) ssbo=%u tex=%u nc=%u pvt=%u%s",
+	    [vs->name UTF8String], [fs->name UTF8String], rp->vs.k.nwords, rp->fs.k.nwords, rp->fs_deferred ? " (deferred)" : "",
+	    rp->nattr, rp->fs.k.num_ubos, rp->fs.k.nranges, rp->fs.k.ubo_ptrs_vec4, rp->fs.k.num_ssbos, rp->fs.num_tex_slots,
+	    rp->fs.ncolor, rp->fs.k.pvtmem_size, rp->fs.fb_read ? " (fbRead)" : "");
 	return o;
 refuse:
 	lavError(err, @"MTLLibraryErrorDomain", "the render pipeline uses something this driver does not serve (see the log)");
@@ -1823,6 +1827,10 @@ runDraw(struct op * op)
 	BOOL ok;
 	const char * name = rp->vs.k.name[0] ? rp->vs.k.name : "(render)";
 
+	if (d->count == 0 || d->instances == 0) {
+		free(r);
+		return YES;
+	}
 	if (gBytes.handle == 0 && !lavBufNew(65536, &gBytes)) {
 		free(r);
 		return NO;
@@ -1950,7 +1958,7 @@ runDraw(struct op * op)
 		}
 	}
 	r->flush_gpu = gStream.gpu + SCRATCH_OFFSET + 64;
-	r->hole_gpu = gStream.gpu + SCRATCH_OFFSET + 128;
+	r->hole_gpu = gStream.gpu + 0x9000u;
 	w = malloc(STREAM_WORDS * 4);
 	n = lav5_build_render(w, STREAM_WORDS, r, &why);
 	if (n == 0) {
@@ -1958,6 +1966,17 @@ runDraw(struct op * op)
 		free(w);
 		free(r);
 		return NO;
+	}
+	{
+		static uint32_t drawLog;
+
+		if (drawLog < 8 && (r->nrt > 1 || r->fs->fb_read || r->fs->k.ubo_ptrs_vec4 >= 0)) {
+			lavlog("draw #%u %s+%s nrt=%u rt0=%#llx(%ux%u) rt1=%#llx fb=%u ubo=%u(p=%d) tex=%u cnt=%u w=%zu",
+			    drawLog, [STATE(rp->vfn, struct fnstate)->name UTF8String], [STATE(rp->ffn, struct fnstate)->name UTF8String],
+			    r->nrt, (unsigned long long)r->rt_gpu, r->rt_width, r->rt_height, (unsigned long long)r->rt[1].gpu,
+			    r->fs->fb_read, r->fs->k.num_ubos, r->fs->k.ubo_ptrs_vec4, r->fs->num_tex_slots, d->count, n);
+			drawLog++;
+		}
 	}
 	ok = lavSubmit(w, n);
 	if (!ok) {

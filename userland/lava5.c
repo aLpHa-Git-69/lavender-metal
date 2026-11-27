@@ -270,6 +270,35 @@ lav5_build(uint32_t * words, size_t cap, const struct lav5_dispatch * d, const c
 		}
 		load_consts(s, r->offset_vec4, tmp, r->size_dwords);
 	}
+	if (k->ubo_ptrs_vec4 >= 0 && k->num_ubos > 0 && (uint32_t)k->ubo_ptrs_vec4 < k->constlen) {
+		unsigned num = k->num_ubos <= 32 ? k->num_ubos : 32;
+		unsigned anum = (num + 1u) & ~1u;
+		unsigned max_vec4 = k->constlen - (uint32_t)k->ubo_ptrs_vec4;
+		uint32_t ptrs[64];
+
+		if (anum / 2 > max_vec4) {
+			anum = max_vec4 * 2;
+			if (num > anum) {
+				num = anum;
+			}
+		}
+		for (unsigned u = 0; u < anum; u++) {
+			uint64_t a = d->hole_gpu;
+
+			if (u < num) {
+				if (k->const_data_ubo != 0 && u == k->const_data_ubo - 1 && d->code_gpu != 0) {
+					a = d->code_gpu + k->const_data_offset;
+				} else if (u < LAV5_MAX_BUFFERS && d->buf[u].gpu != 0) {
+					a = d->buf[u].gpu;
+				}
+			}
+			ptrs[2 * u] = (uint32_t)a;
+			ptrs[2 * u + 1] = (uint32_t)(a >> 32);
+		}
+		if (anum > 0) {
+			load_consts(s, (uint32_t)k->ubo_ptrs_vec4, ptrs, anum * 2);
+		}
+	}
 	if (k->nimm != 0) {
 		unsigned n = (k->nimm + 3) & ~3u;
 		uint32_t tmp[1024];

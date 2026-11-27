@@ -38,10 +38,11 @@ struct lav5_kernel {
 	uint32_t nimm;          /* dwords */
 	uint32_t imm_vec4;
 	int32_t dp_vec4;        /* driver params (ir3_driver_params_cs), -1 when the kernel reads none */
+	int32_t ubo_ptrs_vec4;  /* a5xx UBO base pointers (IR3_CONST_ALLOC_UBO_PTRS), -1 when none */
 	uint32_t num_ubos, num_ssbos, num_ibos;
 	uint32_t ssbo_undeclared;
 	uint32_t shared_size, pvtmem_size;
-	uint32_t const_data_size;
+	uint32_t const_data_offset, const_data_size, const_data_ubo;
 	uint32_t nranges;
 	struct lav5_range ranges[LAV5_MAX_RANGES];
 	uint32_t buffer_mask;   /* bit n: the kernel has a resource at [[buffer(n)]] */
