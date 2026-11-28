@@ -1382,15 +1382,28 @@ deviceNewLibrarySource(__unused id self, __unused SEL _cmd, __unused id source, 
 }
 
 static id
-deviceNoLibrary(__unused id self, __unused SEL _cmd)
+deviceNoLibrary(id self, SEL _cmd)
 {
+	NSString * path = [[NSBundle mainBundle] pathForResource:@"default" ofType:@"metallib"];
+
+	if (path != nil) {
+		NSError * err = nil;
+		return deviceNewLibraryFile(self, _cmd, path, &err);
+	}
 	lavlog("newDefaultLibrary: no default library");
 	return nil;
 }
 
 static id
-deviceNoLibraryBundle(__unused id self, __unused SEL _cmd, __unused id bundle, NSError ** err)
+deviceNoLibraryBundle(id self, SEL _cmd, id bundle, NSError ** err)
 {
+	NSString * path = [bundle isKindOfClass:[NSBundle class]]
+	    ? [(NSBundle *)bundle pathForResource:@"default" ofType:@"metallib"]
+	    : nil;
+
+	if (path != nil) {
+		return deviceNewLibraryFile(self, _cmd, path, err);
+	}
 	lavlog("newDefaultLibraryWithBundle: no default library");
 	lavError(err, @"MTLLibraryErrorDomain", "no default library");
 	return nil;

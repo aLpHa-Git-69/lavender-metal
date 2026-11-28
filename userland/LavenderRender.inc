@@ -777,7 +777,7 @@ static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
 {
 	uint64_t h = 0xcbf29ce484222325ull;
-	const char * stamp = "lavcc-v12";
+	const char * stamp = "lavcc-v13";
 
 	h = lavHash64(h, stamp, strlen(stamp));
 	h = lavHash64(h, &STATE(vs->library, struct libstate)->hash, 8);

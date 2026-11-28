@@ -49,7 +49,7 @@ jobs:
             /tmp/mi/mesa-25.0.7/src
             /tmp/mi/mesa-25.0.7/include
             /tmp/mi/mesa-25.0.7/.hakios-patches
-          key: mesa-ios-25.0.7-x86_64-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh') }}
+          key: mesa-ios-25.0.7-x86_64-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh', 'tools/mesa-ios/air-texture-array-slot.patch') }}
 
       - name: Build Mesa 25.0.7 + AIR front end for iOS arm64
         if: steps.mesa-cache.outputs.cache-hit != 'true'
@@ -73,7 +73,7 @@ jobs:
             /tmp/mi/mesa-25.0.7/src
             /tmp/mi/mesa-25.0.7/include
             /tmp/mi/mesa-25.0.7/.hakios-patches
-          key: mesa-ios-25.0.7-x86_64-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh') }}
+          key: mesa-ios-25.0.7-x86_64-${{ env.HAKIOS_SHA }}-${{ hashFiles('tools/mesa-ios/build-mac.sh', 'tools/mesa-ios/air-texture-array-slot.patch') }}
 
       - name: Build LavenderMetal.bundle and test tools
         run: |

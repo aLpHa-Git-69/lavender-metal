@@ -7,6 +7,7 @@ set -euo pipefail
 VERSION=25.0.7
 SHA256=592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
 P=$(cd "$1" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 B=${B:-/tmp/mi}
 mkdir -p "$B" && cd "$B"
 SDK=$(xcrun -sdk iphoneos --show-sdk-path)
@@ -33,6 +34,9 @@ fi
 rm -rf mesa-$VERSION/src/compiler/air mesa-$VERSION/src/hakios-drm
 cp -r "$P/air" mesa-$VERSION/src/compiler/air
 cp -r "$P/hakios-drm" mesa-$VERSION/src/hakios-drm
+if [ -f "$SCRIPT_DIR/air-texture-array-slot.patch" ]; then
+	patch -s --no-backup-if-mismatch -d mesa-$VERSION/src/compiler -p1 < "$SCRIPT_DIR/air-texture-array-slot.patch"
+fi
 cat > cross.ini <<INI
 [binaries]
 c = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK', '-target', 'arm64-apple-ios16.0', '-D_DARWIN_C_SOURCE']
