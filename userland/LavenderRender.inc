@@ -140,35 +140,52 @@ deviceNewTexture(__unused id self, __unused SEL _cmd, id desc)
 	return o;
 }
 
-/* Fast 64-byte NEON streaming copy for reading Write-Combine GPU memory on arm64 (Kryo 260). */
+/* Fast 128-byte NEON streaming copy with non-temporal stores for reading Write-Combine GPU memory on arm64. */
 static void
 copyRowFast(uint8_t * dst, const uint8_t * src, size_t n)
 {
 #if defined(__aarch64__)
-	size_t chunks = n >> 6;
-	if (chunks != 0) {
-		uint8_t * d = dst;
-		const uint8_t * s = src;
-		size_t c = chunks;
+	uint8_t * d = dst;
+	const uint8_t * s = src;
+	size_t c128 = n >> 7;
+	if (c128 != 0) {
 		__asm__ volatile(
 		    "1:\n"
 		    "ldp q0, q1, [%[s]], #32\n"
 		    "ldp q2, q3, [%[s]], #32\n"
-		    "stp q0, q1, [%[d]], #32\n"
-		    "stp q2, q3, [%[d]], #32\n"
+		    "ldp q4, q5, [%[s]], #32\n"
+		    "ldp q6, q7, [%[s]], #32\n"
+		    "stnp q0, q1, [%[d]]\n"
+		    "stnp q2, q3, [%[d], #32]\n"
+		    "stnp q4, q5, [%[d], #64]\n"
+		    "stnp q6, q7, [%[d], #96]\n"
+		    "add %[d], %[d], #128\n"
 		    "subs %[c], %[c], #1\n"
 		    "b.ne 1b\n"
-		    : [d] "+r"(d), [s] "+r"(s), [c] "+r"(c)
+		    : [d] "+r"(d), [s] "+r"(s), [c] "+r"(c128)
 		    :
-		    : "v0", "v1", "v2", "v3", "cc", "memory");
-		size_t rem = n & 63u;
-		if (rem != 0) {
-			memcpy(d, s, rem);
-		}
-		return;
+		    : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "cc", "memory");
+		n &= 127u;
 	}
-#endif
+	if (n >= 64) {
+		__asm__ volatile(
+		    "ldp q0, q1, [%[s]], #32\n"
+		    "ldp q2, q3, [%[s]], #32\n"
+		    "stnp q0, q1, [%[d]]\n"
+		    "stnp q2, q3, [%[d], #32]\n"
+		    "add %[d], %[d], #64\n"
+		    : [d] "+r"(d), [s] "+r"(s)
+		    :
+		    : "v0", "v1", "v2", "v3", "memory");
+		n -= 64;
+	}
+	if (n != 0) {
+		memcpy(d, s, n);
+	}
+	return;
+#else
 	memcpy(dst, src, n);
+#endif
 }
 
 /* IOSurface <-> the texture's own memory (the GPU cannot reach an IOSurface's scattered pages): parallel 4-core NEON copy */
@@ -650,7 +667,7 @@ readBlend(id desc, uint64_t index, struct lav5_blend * out)
  * function names and by this plug-in build (the compiler changes with it).
  */
 #define PIPE_CACHE_DIR "/var/tmp/lavmetal-cache"
-#define PIPE_CACHE_MAGIC 0x4c564339u
+#define PIPE_CACHE_MAGIC 0x4c56433au
 
 static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
@@ -1334,8 +1351,8 @@ deviceNewSampler(__unused id self, __unused SEL _cmd, id desc)
 		return nil;
 	}
 	for (int i = 0; i < 2; i++) {
-		wrap[i] = mode[i] == 2 ? 0 : mode[i] == 3 ? 2 : 1;
-		if (mode[i] > 3) {
+		wrap[i] = mode[i] == 2 ? 0 : mode[i] == 3 ? 2 : (mode[i] == 4 || mode[i] == 5) ? 3 : 1;
+		if (mode[i] > 5) {
 			lavlog("newSamplerState: address mode %llu approximated by clamp to edge", (unsigned long long)mode[i]);
 		}
 	}
@@ -1346,10 +1363,8 @@ deviceNewSampler(__unused id self, __unused SEL _cmd, id desc)
 	sp->mip_linear = msgU(desc, "mipFilter") == 2;
 	sp->wrap_s = wrap[0];
 	sp->wrap_t = wrap[1];
+	sp->unnorm = !(msgU(desc, "normalizedCoordinates") & 0xff);
 	sp->valid = 1;
-	if (!(msgU(desc, "normalizedCoordinates") & 0xff)) {
-		lavlog("newSamplerState: unnormalized coordinates are not served (ignored)");
-	}
 	return o;
 }
 
@@ -1988,7 +2003,7 @@ drawBatchAdd(struct op * op)
 		return NO;
 	}
 	/* Flush first if gBytes scratch is running low or PM4 batch buffer is nearly full. */
-	if (b->len > 0 && (b->boff + 8192u > gBytes.len || b->len + 700u + DRAW_BATCH_RESERVE_EPILOGUE > STREAM_WORDS)) {
+	if (b->len > 0 && (b->boff + 8192u > gBytes.len || b->len + 400u + DRAW_BATCH_RESERVE_EPILOGUE > STREAM_WORDS)) {
 		if (!drawBatchFlushImpl(b)) {
 			return NO;
 		}
@@ -2111,6 +2126,8 @@ retry:;
 		}
 		if (d->fsamp[i] != nil) {
 			r->samp[i] = *STATE(d->fsamp[i], struct lav5_samp);
+		} else if (r->fs->inline_samp[i].valid) {
+			r->samp[i] = r->fs->inline_samp[i];
 		}
 	}
 	/* Framebuffer fetch slots (lowerFbRead): bind the pass's colour attachment n at slot i when fb_target[i] == n + 1. */

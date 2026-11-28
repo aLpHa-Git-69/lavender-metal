@@ -579,6 +579,59 @@ bool dropUnreadScratch(nir_shader* nir) {
     return true;
 }
 
+// Recompute textures_used and num_ssbos from surviving NIR instructions after dead-code elimination
+// (the AIR front end sets all declared slots before foldConstantScratch/nir_opt_dce removes dead branches).
+void refreshLiveResources(nir_shader* nir) {
+    bool dynTex = false, dynSsbo = false;
+    uint32_t maxSsbo = 0;
+    BITSET_DECLARE(liveTex, 128);
+    BITSET_ZERO(liveTex);
+    nir_foreach_function_impl(impl, nir) {
+        nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+                if (instr->type == nir_instr_type_tex) {
+                    nir_tex_instr* tex = nir_instr_as_tex(instr);
+                    if (tex->op == nir_texop_txf_ms_fb) continue;
+                    if (nir_tex_instr_src_index(tex, nir_tex_src_texture_offset) >= 0 ||
+                        nir_tex_instr_src_index(tex, nir_tex_src_texture_handle) >= 0 ||
+                        nir_tex_instr_src_index(tex, nir_tex_src_texture_deref) >= 0) {
+                        dynTex = true;
+                    } else if (tex->texture_index < 128) {
+                        BITSET_SET(liveTex, tex->texture_index);
+                    }
+                } else if (instr->type == nir_instr_type_intrinsic) {
+                    nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
+                    int sidx = -1;
+                    switch (in->intrinsic) {
+                    case nir_intrinsic_load_ssbo:
+                    case nir_intrinsic_ssbo_atomic:
+                    case nir_intrinsic_ssbo_atomic_swap:
+                    case nir_intrinsic_get_ssbo_size: sidx = 0; break;
+                    case nir_intrinsic_store_ssbo: sidx = 1; break;
+                    default: break;
+                    }
+                    if (sidx >= 0) {
+                        if (!nir_src_is_const(in->src[sidx])) {
+                            dynSsbo = true;
+                        } else {
+                            uint32_t b = uint32_t(nir_src_as_uint(in->src[sidx]));
+                            if (b + 1 > maxSsbo) maxSsbo = b + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!dynTex) {
+        for (unsigned w = 0; w < ARRAY_SIZE(nir->info.textures_used); w++) {
+            nir->info.textures_used[w] = w < ARRAY_SIZE(liveTex) ? liveTex[w] : 0;
+        }
+    }
+    if (!dynSsbo && maxSsbo < nir->info.num_ssbos) {
+        nir->info.num_ssbos = maxSsbo;
+    }
+}
+
 // HAKIOS_METAL_PHASES=1: each phase of a stage's compile timed, on standard error (where a specialisation's time goes)
 void phase(const char* what) {
     static const bool on = getenv("HAKIOS_METAL_PHASES") != nullptr;
@@ -665,7 +718,10 @@ bool translate(const void* bitcode, size_t size, Translation& t, std::string* wh
             }
             if (!progress) break;
         }
-        if (earlyDce) dropUnreadScratch(t.nir);
+        if (earlyDce) {
+            dropUnreadScratch(t.nir);
+            refreshLiveResources(t.nir);
+        }
     }
     phase("the known buffer folded");
     return true;
@@ -690,7 +746,8 @@ float floatOfHalf(uint16_t h) {
 // 4 / 0 / 2 / 3 / 5; the filters, the mip filter and the border colour share Metal's numbers; coord::pixel is the
 // descriptor's normalizedCoordinates false) and made into its TEX_SAMP words as the API's samplers are (makeSampler).
 // Refused by name: what makeSampler does not serve.
-bool inlineSamplersOf(const Translation& t, std::vector<std::pair<uint32_t, Sampler>>* out, std::string* why) {
+bool inlineSamplersOf(const Translation& t, std::vector<std::pair<uint32_t, Sampler>>* out, std::string* why,
+                      std::vector<std::pair<uint32_t, SamplerDesc>>* descs = nullptr) {
     static const uint32_t kAddress[5] = {4, 0, 2, 3, 5};
     for (unsigned i = 0; i < t.info.num_resources; i++) {
         const air_resource& r = t.info.resources[i];
@@ -726,6 +783,7 @@ bool inlineSamplersOf(const Translation& t, std::vector<std::pair<uint32_t, Samp
             return refuse(why, what + ": " + swhy);
         }
         out->push_back({r.index, s});
+        if (descs != nullptr) descs->push_back({r.index, d});
     }
     return true;
 }
@@ -1070,6 +1128,7 @@ bool compileVariant(Translation& t, PassOrder order, std::string* why) {
     nir_shader_instructions_pass(nir, lowerUclz, nir_metadata_control_flow, nullptr);
     ir3_nir_lower_io_to_temporaries(nir);
     ir3_finalize_nir(compiler, &nirOptions, nir);
+    refreshLiveResources(nir);
     phase("ir3_finalize_nir");
     if (!lowerFbRead(nir, t.fbTargets, why)) return false;
 
@@ -2031,7 +2090,7 @@ std::unique_ptr<CompiledStage> compileStageOnce(const void* bitcode, size_t size
     if (!walkOutputClasses(t.nir, classes, why)) return nullptr;
     out->writesMemory = writesMemoryOf(t.nir);
     if (!nullTextures(t, out->stage.k, true, why)) return nullptr;
-    if (!inlineSamplersOf(t, &out->inlineSamplers, why)) return nullptr;
+    if (!inlineSamplersOf(t, &out->inlineSamplers, why, &out->inlineSamplerDescs)) return nullptr;
     // a fragment stage's device buffers past the vertex stage's in the one IBO table: every SSBO index the front end
     // emitted plus IBO_BASE, and ir3's count of them (num_ssbos, the table's extent) as far again
     if (iboBase != 0 && t.nir->info.stage == MESA_SHADER_FRAGMENT && t.nir->info.num_ssbos != 0) {

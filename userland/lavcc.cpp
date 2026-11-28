@@ -198,7 +198,16 @@ static void flatten(const Kernel& c, const std::vector<Resource>& resources, str
     }
 }
 
-static void flatten_stage(const Stage& s, const std::vector<Resource>& resources, struct lav5_stage* out)
+static uint32_t map_addr(uint32_t m)
+{
+    if (m == 2) return 0;               /* Repeat */
+    if (m == 3) return 2;               /* MirrorRepeat */
+    if (m == 4 || m == 5) return 3;     /* ClampToZero / ClampToBorderColor */
+    return 1;                           /* ClampToEdge */
+}
+
+static void flatten_stage(const Stage& s, const std::vector<Resource>& resources,
+                          const std::vector<std::pair<uint32_t, SamplerDesc>>& inlineDescs, struct lav5_stage* out)
 {
     flatten(s.k, resources, &out->k);
     out->is_fragment = s.kind == kStageFragment;
@@ -240,6 +249,18 @@ static void flatten_stage(const Stage& s, const std::vector<Resource>& resources
     for (uint32_t i = 0; i < LAV5_MAX_TEX && i < kMaxTextureSlots; i++) {
         out->fb_target[i] = s.k.textures[i].fbTarget;
     }
+    for (const auto& p : inlineDescs) {
+        if (p.first < 16) {
+            struct lav5_samp& dst = out->inline_samp[p.first];
+            dst.mag = p.second.magFilter >= 1 ? 1u : 0u;
+            dst.min = p.second.minFilter >= 1 ? 1u : 0u;
+            dst.mip_linear = p.second.mipFilter == 2 ? 1u : 0u;
+            dst.wrap_s = map_addr(p.second.sAddress);
+            dst.wrap_t = map_addr(p.second.tAddress);
+            dst.unnorm = p.second.normalizedCoordinates ? 0u : 1u;
+            dst.valid = 1u;
+        }
+    }
 }
 
 static std::unique_ptr<CompiledStage> stage_of(struct lavcc_lib* l, const char* name, uint8_t type,
@@ -268,8 +289,8 @@ extern "C" int lavcc_compile_program(struct lavcc_lib* lv, const char* vname, co
     memset(vs, 0, sizeof *vs);
     memset(fs, 0, sizeof *fs);
     memset(link, 0, sizeof *link);
-    flatten_stage(v->stage, v->resources, vs);
-    flatten_stage(f->stage, f->resources, fs);
+    flatten_stage(v->stage, v->resources, v->inlineSamplerDescs, vs);
+    flatten_stage(f->stage, f->resources, f->inlineSamplerDescs, fs);
     link->cnt = lk.cnt;
     link->max_loc = lk.maxLoc;
     link->position_loc = lk.positionLoc;
@@ -292,7 +313,7 @@ extern "C" int lavcc_compile_vs(struct lavcc_lib* lv, const char* vname, const s
     auto v = stage_of(lv, vname, MetalFunction::kVertex, vfcs, nvfcs, &w);
     if (!v) { snprintf(why, whysize, "vertex function: %s", w.c_str()); return 0; }
     memset(vs, 0, sizeof *vs);
-    flatten_stage(v->stage, v->resources, vs);
+    flatten_stage(v->stage, v->resources, v->inlineSamplerDescs, vs);
     return 1;
 }
 
@@ -381,8 +402,8 @@ extern "C" int lavcc_compile_program_spec(struct lavcc_lib* lv, const char* vnam
     memset(vs, 0, sizeof *vs);
     memset(fs, 0, sizeof *fs);
     memset(link, 0, sizeof *link);
-    flatten_stage(v->stage, v->resources, vs);
-    flatten_stage(f->stage, f->resources, fs);
+    flatten_stage(v->stage, v->resources, v->inlineSamplerDescs, vs);
+    flatten_stage(f->stage, f->resources, f->inlineSamplerDescs, fs);
     link->cnt = lk.cnt;
     link->max_loc = lk.maxLoc;
     link->position_loc = lk.positionLoc;
@@ -428,7 +449,7 @@ extern "C" int lavcc_probe(struct lavcc_lib* l, unsigned i, char* summary, size_
     }
     lav5_stage ls;
     memset(&ls, 0, sizeof ls);
-    flatten_stage(s->stage, s->resources, &ls);
+    flatten_stage(s->stage, s->resources, s->inlineSamplerDescs, &ls);
     const char* refuse = lav5_refuse_stage(&ls);
     snprintf(summary, ssize, "%s %u words, %u buffers %u textures %u samplers %u images; ssbos %u ubos %u ncolor %u%s%s", fn.type == MetalFunction::kVertex ? "vertex" : "fragment",
              s->stage.k.numWords, buf, tex, smp, img, ls.k.num_ssbos, ls.k.num_ubos, ls.ncolor, refuse ? " -- DRIVER REFUSES: " : "", refuse ? refuse : "");
@@ -469,8 +490,8 @@ extern "C" void lavcc_survey_pairs(struct lavcc_lib* l)
             struct lav5_stage vs, fs;
             memset(&vs, 0, sizeof vs);
             memset(&fs, 0, sizeof fs);
-            flatten_stage(st[i]->stage, st[i]->resources, &vs);
-            flatten_stage(st[j]->stage, st[j]->resources, &fs);
+            flatten_stage(st[i]->stage, st[i]->resources, st[i]->inlineSamplerDescs, &vs);
+            flatten_stage(st[j]->stage, st[j]->resources, st[j]->inlineSamplerDescs, &fs);
             const char* e = lav5_refuse_stage(&vs);
             const char* who = fns[i].name.c_str();
             if (!e) { e = lav5_refuse_stage(&fs); who = fns[j].name.c_str(); }

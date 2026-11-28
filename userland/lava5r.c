@@ -900,14 +900,15 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 				int v = sp->valid != 0;
 				enum a5xx_tex_filter mag = (!v || sp->mag) ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST;
 				enum a5xx_tex_filter min = (!v || sp->min) ? A5XX_TEX_LINEAR : A5XX_TEX_NEAREST;
-				enum a5xx_tex_clamp ws = !v ? A5XX_TEX_CLAMP_TO_EDGE : sp->wrap_s == 0 ? A5XX_TEX_REPEAT : sp->wrap_s == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
-				enum a5xx_tex_clamp wt = !v ? A5XX_TEX_CLAMP_TO_EDGE : sp->wrap_t == 0 ? A5XX_TEX_REPEAT : sp->wrap_t == 2 ? A5XX_TEX_MIRROR_REPEAT : A5XX_TEX_CLAMP_TO_EDGE;
+				enum a5xx_tex_clamp ws = !v ? A5XX_TEX_CLAMP_TO_EDGE : sp->wrap_s == 0 ? A5XX_TEX_REPEAT : sp->wrap_s == 2 ? A5XX_TEX_MIRROR_REPEAT : sp->wrap_s == 3 ? A5XX_TEX_CLAMP_TO_BORDER : A5XX_TEX_CLAMP_TO_EDGE;
+				enum a5xx_tex_clamp wt = !v ? A5XX_TEX_CLAMP_TO_EDGE : sp->wrap_t == 0 ? A5XX_TEX_REPEAT : sp->wrap_t == 2 ? A5XX_TEX_MIRROR_REPEAT : sp->wrap_t == 3 ? A5XX_TEX_CLAMP_TO_BORDER : A5XX_TEX_CLAMP_TO_EDGE;
 
 				out(s, COND(v && sp->mip_linear, A5XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) | A5XX_TEX_SAMP_0_XY_MAG(mag) |
 				    A5XX_TEX_SAMP_0_XY_MIN(min) | A5XX_TEX_SAMP_0_WRAP_S(ws) | A5XX_TEX_SAMP_0_WRAP_T(wt) |
 				    A5XX_TEX_SAMP_0_WRAP_R(A5XX_TEX_CLAMP_TO_EDGE));
-				out(s, A5XX_TEX_SAMP_1_MIN_LOD(0.0f) | A5XX_TEX_SAMP_1_MAX_LOD(0.125f) | A5XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF);
-				out(s, A5XX_TEX_SAMP_2_BCOLOR_OFFSET(i));
+				out(s, A5XX_TEX_SAMP_1_MIN_LOD(0.0f) | A5XX_TEX_SAMP_1_MAX_LOD(0.125f) |
+				    A5XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF | COND(v && sp->unnorm, A5XX_TEX_SAMP_1_UNNORM_COORDS));
+				out(s, A5XX_TEX_SAMP_2_BCOLOR_OFFSET(0));
 				out(s, 0);
 			}
 		}
@@ -936,7 +937,8 @@ lav5_build_render(uint32_t * words, size_t cap, const struct lav5_render * r, co
 					case LAV5_FMT_RGBA8_SRGB:
 						srgb = A5XX_TEX_CONST_0_SRGB; break;
 					case LAV5_FMT_A8:
-						tfmt = TFMT5_A8_UNORM;
+						/* Mesa fd5_format.c:64: A8_UNORM samples via TFMT5_8_UNORM (channel X) swizzled to (0,0,0,X) */
+						tfmt = TFMT5_8_UNORM;
 						sx = A5XX_TEX_ZERO; sy = A5XX_TEX_ZERO; sz = A5XX_TEX_ZERO; sw = A5XX_TEX_X; break;
 					case LAV5_FMT_R8:
 						tfmt = TFMT5_8_UNORM;

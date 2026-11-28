@@ -70,6 +70,13 @@ struct lav5_dispatch {
 
 #define LAV5_MAX_IO 34
 
+/* a sampler: filters 0 nearest / 1 linear; wrap 0 repeat / 1 clamp to edge / 2 mirror repeat / 3 clamp to border (zero) */
+struct lav5_samp {
+	uint32_t mag, min, mip_linear, wrap_s, wrap_t;
+	uint32_t valid;
+	uint32_t unnorm;
+};
+
 struct lav5_io {
 	uint8_t slot, regid, compmask, inloc, sysval, bary, flat, half;
 };
@@ -96,6 +103,7 @@ struct lav5_stage {
 	uint32_t need_pixlod, has_kill, writes_pos;
 	uint32_t fb_read, num_tex_slots, sampler_mask;
 	uint8_t fb_target[LAV5_MAX_TEX];
+	struct lav5_samp inline_samp[16];
 };
 
 struct lav5_link {
@@ -140,12 +148,6 @@ struct lav5_tex {
 	uint32_t bgra;                              /* legacy 1=BGRA8 / 0=RGBA8 when format==0; or enum lav5_fmt */
 	uint32_t valid;
 	uint32_t format;                            /* enum lav5_fmt + 1 when set (0 falls back to bgra flag) */
-};
-
-/* a sampler: filters 0 nearest / 1 linear; wrap 0 repeat / 1 clamp to edge / 2 mirror repeat */
-struct lav5_samp {
-	uint32_t mag, min, mip_linear, wrap_s, wrap_t;
-	uint32_t valid;
 };
 
 struct lav5_blend {
