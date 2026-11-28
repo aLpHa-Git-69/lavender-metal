@@ -68,6 +68,8 @@ struct texstate {
 	id backingBuffer;                       /* retained: buffer-backed linear texture (newTextureWithDescriptor:offset:bytesPerRow:) */
 	uint64_t backingOffset, backingPitch;
 	BOOL backingAlias;
+	BOOL zeroCopy;                          /* YES: GPU renders directly to contiguous scanout IOSurface (no surfaceCopy) */
+	uint32_t surfaceId;
 	struct lbuf b;
 	uint32_t width, height, format, pitch;
 	uint32_t mips, bpp, texType, lastSeed;
@@ -266,6 +268,14 @@ surfacePullIfDirty(struct texstate * t)
 	if (t->surface == NULL) {
 		return;
 	}
+	if (t->zeroCopy) {
+		if (!t->seedValid || IOSurfaceGetSeed(t->surface) != t->lastSeed) {
+			lavSurfaceSync(t->surfaceId, 1);
+			t->lastSeed = IOSurfaceGetSeed(t->surface);
+			t->seedValid = YES;
+		}
+		return;
+	}
 	if (!t->seedValid || IOSurfaceGetSeed(t->surface) != t->lastSeed) {
 		surfaceCopy(t, NO);
 	}
@@ -315,6 +325,17 @@ cbSyncSurfaces(struct cbstate * st)
 				synced[nsynced++] = tex;
 			}
 			ts = STATE(tex, struct texstate);
+			if (ts->zeroCopy) {
+				lavSurfaceSync(ts->surfaceId, 1);
+				ts->lastSeed = IOSurfaceGetSeed(ts->surface);
+				ts->seedValid = YES;
+				if (syncLog < 12) {
+					lavlog("sync #%u %ux%u fmt %u (zero-copy id=%u)",
+					    syncLog, ts->width, ts->height, ts->format, ts->surfaceId);
+					syncLog++;
+				}
+				continue;
+			}
 			surfaceCopy(ts, YES);
 			if (syncLog < 12 && ts->bpp == 4 && ts->width >= 2 && ts->height >= 2) {
 				const uint8_t * p = (const uint8_t *)ts->b.cpu;
@@ -334,9 +355,12 @@ cbSyncSurfaces(struct cbstate * st)
 static id
 deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_t plane)
 {
+	static uint32_t zcLog;
 	id o;
 	struct texstate * st;
-	uint32_t sfmt;
+	uint32_t sfmt, sid, bpp = 0;
+	uint64_t w, h, fmt, type, depth, mips, samples, layers;
+	struct lav_surface_info zc;
 
 	if (surface == NULL || plane != 0) {
 		lavlog("newTexture from an IOSurface: plane %llu refused", (unsigned long long)plane);
@@ -346,6 +370,55 @@ deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_
 	if (sfmt != 'BGRA' && sfmt != 'RGBA' && sfmt != 'L008' && sfmt != 'LA08' && sfmt != 'RGhA') {
 		lavlog("newTexture from an IOSurface: pixel format %#x: only BGRA/RGBA/L008/LA08/RGhA served", sfmt);
 		return nil;
+	}
+	w = msgU(desc, "width");
+	h = msgU(desc, "height");
+	fmt = msgU(desc, "pixelFormat");
+	type = msgU(desc, "textureType");
+	depth = msgU(desc, "depth");
+	mips = msgU(desc, "mipmapLevelCount");
+	samples = msgU(desc, "sampleCount");
+	layers = msgU(desc, "arrayLength");
+	if (type == 0 && h == 0) {
+		h = 1;
+	}
+	sid = (uint32_t)IOSurfaceGetID(surface);
+	if (lavOpen() && w > 0 && h > 0 && w <= 4096 && h <= 4096 &&
+	    lavFmtFromMetal((uint32_t)fmt, &bpp) != 0xffu && (type == 2 || type == 0) &&
+	    depth <= 1 && samples <= 1 && layers <= 1 &&
+	    IOSurfaceGetWidth(surface) >= w && IOSurfaceGetHeight(surface) >= h &&
+	    lavSurfaceInfo(sid, &zc) &&
+	    (zc.address & 63u) == 0 && (zc.bytes_per_row & 63u) == 0 &&
+	    zc.bytes_per_row >= w * bpp && (uint64_t)zc.bytes_per_row * h <= zc.size) {
+		o = makeObject(gTextureClass, sizeof(struct texstate));
+		if (o == nil) {
+			return nil;
+		}
+		st = STATE(o, struct texstate);
+		memset(st, 0, sizeof(*st));
+		st->surface = (IOSurfaceRef)CFRetain(surface);
+		st->surfaceId = sid;
+		st->zeroCopy = YES;
+		st->b.gpu = zc.address;
+		st->b.len = zc.size;
+		st->width = (uint32_t)w;
+		st->height = (uint32_t)h;
+		st->format = (uint32_t)fmt;
+		st->pitch = zc.bytes_per_row;
+		st->mips = mips > 0 ? (uint32_t)mips : 1u;
+		st->bpp = bpp;
+		st->texType = (uint32_t)type;
+		st->usage = msgU(desc, "usage");
+		st->storage = msgU(desc, "storageMode");
+		lavSurfaceSync(sid, 1);
+		st->lastSeed = IOSurfaceGetSeed(surface);
+		st->seedValid = YES;
+		if (zcLog < 8) {
+			lavlog("zero-copy IOSurface id=%u %ux%u fmt %u pitch %u at GPU %#llx",
+			    sid, st->width, st->height, st->format, st->pitch, (unsigned long long)st->b.gpu);
+			zcLog++;
+		}
+		return o;
 	}
 	o = deviceNewTexture(self, cmd, desc);
 	if (o == nil) {
@@ -359,6 +432,7 @@ deviceNewTextureSurface(id self, SEL cmd, id desc, IOSurfaceRef surface, uint64_
 		return nil;
 	}
 	st->surface = (IOSurfaceRef)CFRetain(surface);
+	st->surfaceId = sid;
 	st->seedValid = NO;
 	lavdbg("texture over an IOSurface %zux%zu fmt %#x, row %zu bytes", IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface),
 	    sfmt, IOSurfaceGetBytesPerRow(surface));
@@ -459,7 +533,7 @@ texDealloc(id self, __unused SEL _cmd)
 	struct texstate * st = STATE(self, struct texstate);
 	struct objc_super sup = { self, class_getSuperclass(gTextureClass) };
 
-	if (!st->backingAlias && st->b.handle != 0) {
+	if (!st->backingAlias && !st->zeroCopy && st->b.handle != 0) {
 		pthread_mutex_lock(&gGPULock);
 		lavBufFree(&st->b);
 		pthread_mutex_unlock(&gGPULock);
@@ -509,6 +583,20 @@ texGetBytes(id self, __unused SEL _cmd, void * dst, uint64_t pitch, LavRegion r,
 		lavlog("getBytes: region outside the texture");
 		return;
 	}
+	if (st->zeroCopy) {
+		lavSurfaceSync(st->surfaceId, 1);
+		if (IOSurfaceLock(st->surface, kIOSurfaceLockReadOnly, NULL) == 0) {
+			uint8_t * base = IOSurfaceGetBaseAddress(st->surface);
+			size_t sp = IOSurfaceGetBytesPerRow(st->surface);
+
+			for (uint64_t y = 0; y < r.size.height; y++) {
+				memcpy((uint8_t *)dst + y * pitch, base + (r.origin.y + y) * sp + r.origin.x * st->bpp,
+				    r.size.width * st->bpp);
+			}
+			IOSurfaceUnlock(st->surface, kIOSurfaceLockReadOnly, NULL);
+		}
+		return;
+	}
 	surfacePullIfDirty(st);
 	for (uint64_t y = 0; y < r.size.height; y++) {
 		memcpy((uint8_t *)dst + y * pitch, (uint8_t *)st->b.cpu + (r.origin.y + y) * st->pitch + r.origin.x * st->bpp,
@@ -529,6 +617,22 @@ texReplace(id self, __unused SEL _cmd, LavRegion r, uint64_t level, const void *
 
 	if (!texRegionOk(st, r, level)) {
 		lavlog("replaceRegion: region outside the texture");
+		return;
+	}
+	if (st->zeroCopy) {
+		if (IOSurfaceLock(st->surface, 0, NULL) == 0) {
+			uint8_t * base = IOSurfaceGetBaseAddress(st->surface);
+			size_t sp = IOSurfaceGetBytesPerRow(st->surface);
+
+			for (uint64_t y = 0; y < r.size.height; y++) {
+				memcpy(base + (r.origin.y + y) * sp + r.origin.x * st->bpp, (const uint8_t *)src + y * pitch,
+				    r.size.width * st->bpp);
+			}
+			IOSurfaceUnlock(st->surface, 0, NULL);
+			lavSurfaceSync(st->surfaceId, 1);
+			st->lastSeed = IOSurfaceGetSeed(st->surface);
+			st->seedValid = YES;
+		}
 		return;
 	}
 	for (uint64_t y = 0; y < r.size.height; y++) {
@@ -673,7 +777,7 @@ static uint64_t
 pipeKeyHash(struct fnstate * vs, struct fnstate * fs, const struct lavcc_uber_val * uvals, uint32_t nuvals)
 {
 	uint64_t h = 0xcbf29ce484222325ull;
-	const char * stamp = __DATE__ __TIME__;
+	const char * stamp = "lavcc-v12";
 
 	h = lavHash64(h, stamp, strlen(stamp));
 	h = lavHash64(h, &STATE(vs->library, struct libstate)->hash, 8);
@@ -1547,12 +1651,23 @@ runClear(struct op * op)
 {
 	struct texstate * t = STATE(op->dst, struct texstate);
 	uint32_t r = clamp8(op->clear[0]), g = clamp8(op->clear[1]), b = clamp8(op->clear[2]), a = clamp8(op->clear[3]);
+	uint8_t * cpuBase = (uint8_t *)t->b.cpu;
+	size_t rowPitch = t->pitch;
+	BOOL locked = NO;
 
+	if (t->zeroCopy) {
+		if (IOSurfaceLock(t->surface, 0, NULL) != 0) {
+			return NO;
+		}
+		cpuBase = IOSurfaceGetBaseAddress(t->surface);
+		rowPitch = IOSurfaceGetBytesPerRow(t->surface);
+		locked = YES;
+	}
 	if (t->bpp == 1) {
 		uint8_t v = (uint8_t)(t->format == PF_A8 ? a : r);
 
 		for (uint32_t y = 0; y < t->height; y++) {
-			memset((uint8_t *)t->b.cpu + (size_t)y * t->pitch, v, t->width);
+			memset(cpuBase + (size_t)y * rowPitch, v, t->width);
 		}
 	} else if (t->bpp == 2) {
 		uint16_t px = 0;
@@ -1570,7 +1685,7 @@ runClear(struct op * op)
 			px = (uint16_t)(((b >> 3) & 0x1fu) | (((g >> 3) & 0x1fu) << 5) | (((r >> 3) & 0x1fu) << 10) | ((a >= 128 ? 1u : 0u) << 15));
 		}
 		for (uint32_t y = 0; y < t->height; y++) {
-			uint16_t * row = (uint16_t *)((uint8_t *)t->b.cpu + (size_t)y * t->pitch);
+			uint16_t * row = (uint16_t *)(cpuBase + (size_t)y * rowPitch);
 
 			for (uint32_t x = 0; x < t->width; x++) {
 				row[x] = px;
@@ -1588,7 +1703,7 @@ runClear(struct op * op)
 			    (b | g << 8 | r << 16 | a << 24) : (r | g << 8 | b << 16 | a << 24);
 		}
 		for (uint32_t y = 0; y < t->height; y++) {
-			memset_pattern4((uint8_t *)t->b.cpu + (size_t)y * t->pitch, &px, rowBytes);
+			memset_pattern4(cpuBase + (size_t)y * rowPitch, &px, rowBytes);
 		}
 	} else if (t->bpp == 8) {
 		uint64_t px = 0;
@@ -1603,8 +1718,14 @@ runClear(struct op * op)
 			memcpy(&px, h, 8);
 		}
 		for (uint32_t y = 0; y < t->height; y++) {
-			memset_pattern8((uint8_t *)t->b.cpu + (size_t)y * t->pitch, &px, rowBytes);
+			memset_pattern8(cpuBase + (size_t)y * rowPitch, &px, rowBytes);
 		}
+	}
+	if (locked) {
+		IOSurfaceUnlock(t->surface, 0, NULL);
+		lavSurfaceSync(t->surfaceId, 1);
+		t->lastSeed = IOSurfaceGetSeed(t->surface);
+		t->seedValid = YES;
 	}
 	return YES;
 }
@@ -1614,6 +1735,10 @@ runCopyTex(struct op * op)
 {
 	struct copytex * ct = op->copytex;
 	struct texstate * s, * d;
+	const uint8_t * sBase;
+	uint8_t * dBase;
+	size_t sPitch, dPitch;
+	BOOL sLocked = NO, dLocked = NO;
 
 	if (ct == NULL || ct->src == nil || ct->dst == nil) {
 		return YES;
@@ -1633,10 +1758,41 @@ runCopyTex(struct op * op)
 		return NO;
 	}
 	surfacePullIfDirty(s);
+	sBase = (const uint8_t *)s->b.cpu;
+	sPitch = s->pitch;
+	dBase = (uint8_t *)d->b.cpu;
+	dPitch = d->pitch;
+	if (s->zeroCopy) {
+		lavSurfaceSync(s->surfaceId, 1);
+		if (IOSurfaceLock(s->surface, kIOSurfaceLockReadOnly, NULL) != 0) {
+			return NO;
+		}
+		sBase = (const uint8_t *)IOSurfaceGetBaseAddress(s->surface);
+		sPitch = IOSurfaceGetBytesPerRow(s->surface);
+		sLocked = YES;
+	}
+	if (d->zeroCopy) {
+		if (IOSurfaceLock(d->surface, 0, NULL) != 0) {
+			if (sLocked) IOSurfaceUnlock(s->surface, kIOSurfaceLockReadOnly, NULL);
+			return NO;
+		}
+		dBase = (uint8_t *)IOSurfaceGetBaseAddress(d->surface);
+		dPitch = IOSurfaceGetBytesPerRow(d->surface);
+		dLocked = YES;
+	}
 	for (uint64_t y = 0; y < ct->h; y++) {
-		memcpy((uint8_t *)d->b.cpu + (ct->dy + y) * d->pitch + ct->dx * d->bpp,
-		    (const uint8_t *)s->b.cpu + (ct->sy + y) * s->pitch + ct->sx * s->bpp,
+		memcpy(dBase + (ct->dy + y) * dPitch + ct->dx * d->bpp,
+		    sBase + (ct->sy + y) * sPitch + ct->sx * s->bpp,
 		    (size_t)ct->w * s->bpp);
+	}
+	if (dLocked) {
+		IOSurfaceUnlock(d->surface, 0, NULL);
+		lavSurfaceSync(d->surfaceId, 1);
+		d->lastSeed = IOSurfaceGetSeed(d->surface);
+		d->seedValid = YES;
+	}
+	if (sLocked) {
+		IOSurfaceUnlock(s->surface, kIOSurfaceLockReadOnly, NULL);
 	}
 	return YES;
 }
@@ -2070,6 +2226,9 @@ retry:;
 		} else {
 			r->fs_pvt_gpu = gPvt[i].gpu;
 		}
+	}
+	if (t->zeroCopy) {
+		surfacePullIfDirty(t);
 	}
 	r->rt_gpu = t->b.gpu;
 	r->rt_width = t->width;

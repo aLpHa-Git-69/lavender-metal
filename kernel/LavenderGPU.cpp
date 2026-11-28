@@ -31,12 +31,15 @@
 #include <kern/thread.h>
 #include <mach/vm_param.h>
 #include <sys/systm.h>
+#include "SweetSurface.h"
 
 extern "C" {
 int lavender_gpu_service_ready(void);
 uint32_t lavender_gpu_service_submit(const uint32_t * dwords, uint32_t count, int * status);
 void LavenderGPUStart(void);
 void LavenderGPUSelfTest(void);
+void sweet_dcache_clean(vm_offset_t addr, unsigned length);
+void sweet_dcache_flush(vm_offset_t addr, unsigned length);
 }
 
 enum {
@@ -46,6 +49,8 @@ enum {
 	kLavSubmit      = 3,
 	kLavSubmitBuf   = 4,
 	kLavMetal       = 5,
+	kLavSurfaceInfo = 6,
+	kLavSurfaceSync = 7,
 };
 
 #define LAV_BUFFERS     256
@@ -68,6 +73,14 @@ struct lav_submit_out {
 };
 struct lav_submit_buf {
 	uint32_t handle, offset, dwords, pad;
+};
+struct lav_surface_info {
+	uint32_t surface_id, pad;
+	uint64_t address;
+	uint32_t size, bytes_per_row;
+};
+struct lav_surface_sync {
+	uint32_t surface_id, op;        /* 0 = clean (CPU->GPU), 1 = flush+inv (GPU->CPU) */
 };
 
 static IOLock * gLavLock;
@@ -273,6 +286,8 @@ class LavenderGPUUserClient : public IOUserClient
 	IOReturn submit(IOExternalMethodArguments * args, struct lav_submit_out * out);
 	IOReturn submitBuf(const struct lav_submit_buf * request, struct lav_submit_out * out);
 	IOReturn run(uint32_t * words, size_t size, struct lav_submit_out * out);
+	IOReturn surfaceInfo(struct lav_surface_info * request);
+	IOReturn surfaceSync(const struct lav_surface_sync * request);
 
 public:
 	bool selfTest(void);
@@ -326,7 +341,9 @@ LavenderGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, 
 		fMemory[type - 1]->retain();
 		*memory = fMemory[type - 1];
 		*options = fPoolN[type - 1] != 0 ? kIOMapWriteCombineCache : 0;
-		IOLog("LavenderGPU: map of buffer %u (%s)\n", (unsigned)type, fPoolN[type - 1] != 0 ? "pool" : "own");
+		if (gLavVerbose) {
+			IOLog("LavenderGPU: map of buffer %u (%s)\n", (unsigned)type, fPoolN[type - 1] != 0 ? "pool" : "own");
+		}
 		ret = kIOReturnSuccess;
 	}
 	IOLockUnlock(gLavLock);
@@ -399,7 +416,9 @@ LavenderGPUUserClient::bufferNew(struct lav_buf_new * request)
 	request->address = fAddress[slot];
 	request->size = size;
 	IOLockUnlock(gLavLock);
-	IOLog("LavenderGPU: buffer %u: pa %llx size %llu%s\n", request->handle, request->address, size, npages != 0 ? " (pool)" : "");
+	if (gLavVerbose) {
+		IOLog("LavenderGPU: buffer %u: pa %llx size %llu%s\n", request->handle, request->address, size, npages != 0 ? " (pool)" : "");
+	}
 	return kIOReturnSuccess;
 }
 
@@ -509,6 +528,50 @@ LavenderGPUUserClient::submitBuf(const struct lav_submit_buf * request, struct l
 }
 
 IOReturn
+LavenderGPUUserClient::surfaceInfo(struct lav_surface_info * request)
+{
+	request->address = 0;
+	request->size = 0;
+	request->bytes_per_row = 0;
+#if defined(SWEET)
+	SweetSurface * s = sweet_surface_copy(request->surface_id);
+	if (s == NULL) {
+		return kIOReturnNotFound;
+	}
+	if (s->scanoutPhys != 0 && s->allocSize != 0 &&
+	    s->scanoutPhys + s->allocSize <= 0x100000000ULL &&
+	    (s->bytesPerRow & 63u) == 0 && ((s->scanoutPhys + s->offset) & 63u) == 0) {
+		request->address = s->scanoutPhys + s->offset;
+		request->size = s->allocSize;
+		request->bytes_per_row = s->bytesPerRow;
+	}
+	s->release();
+#endif
+	return kIOReturnSuccess;
+}
+
+IOReturn
+LavenderGPUUserClient::surfaceSync(const struct lav_surface_sync * request)
+{
+#if defined(SWEET)
+	SweetSurface * s = sweet_surface_copy(request->surface_id);
+	if (s == NULL) {
+		return kIOReturnNotFound;
+	}
+	uintptr_t va = s->kernelAddress();
+	if (va != 0 && s->allocSize != 0) {
+		if (request->op == 0) {
+			sweet_dcache_clean((vm_offset_t)va, s->allocSize);
+		} else {
+			sweet_dcache_flush((vm_offset_t)va, s->allocSize);
+		}
+	}
+	s->release();
+#endif
+	return kIOReturnSuccess;
+}
+
+IOReturn
 LavenderGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
     IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
 {
@@ -517,6 +580,8 @@ LavenderGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
 		struct lav_buf_new bufNew;
 		struct lav_buf_free bufFree;
 		struct lav_submit_out out;
+		struct lav_surface_info surfInfo;
+		struct lav_surface_sync surfSync;
 	} r;
 	size_t size = args->structureInputSize;
 	IOReturn ret = kIOReturnSuccess;
@@ -568,6 +633,21 @@ LavenderGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
 			return kIOReturnBadArgument;
 		}
 		ret = lavMetalSet(*(const uint32_t *)args->structureInput);
+		break;
+	case kLavSurfaceInfo:
+		if (args->structureInput == NULL || size < sizeof(uint32_t)) {
+			return kIOReturnBadArgument;
+		}
+		memcpy(&r.surfInfo, args->structureInput, size < sizeof(r.surfInfo) ? size : sizeof(r.surfInfo));
+		ret = surfaceInfo(&r.surfInfo);
+		outSize = sizeof(r.surfInfo);
+		break;
+	case kLavSurfaceSync:
+		if (args->structureInput == NULL || size < sizeof(struct lav_surface_sync)) {
+			return kIOReturnBadArgument;
+		}
+		memcpy(&r.surfSync, args->structureInput, sizeof(r.surfSync));
+		ret = surfaceSync(&r.surfSync);
 		break;
 	default:
 		IOLog("LavenderGPU: request %u is not known here\n", selector);

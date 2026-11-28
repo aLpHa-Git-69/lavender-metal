@@ -134,12 +134,14 @@ lav_wait(unsigned ms)
 	thread_block(THREAD_CONTINUE_NULL);
 }
 
-/* Announce, then give the log 2 s to leave the machine. */
+static int lav_fast_boot;
+
+/* Announce; bring-up steps pause 2 s for log flush, service mode (lavgpu>=30) uses 10 ms. */
 static void
 lav_announce(const char *what)
 {
 	printf("LAVGPU: about to %s\n", what);
-	lav_wait(2000);
+	lav_wait(lav_fast_boot ? 10 : 2000);
 }
 
 /* Poll a bit until it equals want; returns the last value. */
@@ -327,8 +329,12 @@ lav_gpu_clock(void)
 		base = CC_GPU_PLL1_MODE; l = 0x21; alpha = 0x55555600u; alpha_u = 0x55; user = 0x01200101u; cfg = 0x303;
 	} else if (mhz == 266) {
 		base = CC_GPU_PLL0_MODE; l = 0x1b; alpha = 0x55555600u; alpha_u = 0xb5; user = 0x01200001u; cfg = 0x103;
+	} else if (mhz == 370) {
+		base = CC_GPU_PLL0_MODE; l = 0x26; alpha = 0xaaaaaaabu; alpha_u = 0x8a; user = 0x01200001u; cfg = 0x103;
+	} else if (mhz == 465) {
+		base = CC_GPU_PLL0_MODE; l = 0x30; alpha = 0x00000000u; alpha_u = 0x70; user = 0x01200001u; cfg = 0x103;
 	} else {
-		printf("LAVGPU: lavgpuclk=%u is not 160 or 266\n", mhz);
+		printf("LAVGPU: lavgpuclk=%u is not 160, 266, 370 or 465\n", mhz);
 		return;
 	}
 	printf("LAVGPU: clock: gfx3d rcg cfg %08x, PLL mode %08x -> %u MHz\n", rd(gpucc, CC_GFX3D_RCG_CFG),
@@ -2777,6 +2783,17 @@ lavender_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
 		*status = EIO;
 		return 0;
 	}
+	{
+		uint64_t spin_until;
+		clock_interval_to_deadline(250, NSEC_PER_USEC, &spin_until);
+		while (mach_absolute_time() < spin_until) {
+			flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+			if (*f == seq) {
+				return seq;
+			}
+			__asm__ volatile("yield" ::: "memory");
+		}
+	}
 	for (int i = 0; i < 10000; i++) {
 		flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
 		if (*f == seq) {
@@ -2812,18 +2829,168 @@ lav_service_start(int selftest)
 	}
 }
 
+extern int mdevgetrange(int devid, uint64_t *base, uint64_t *size);
+extern int lav_kern_mkdir(const char *path, mode_t mode);
+extern int sync_internal(void);
+extern vnode_t rootvnode;
+
+static void
+lav_wait_root(void)
+{
+	vfs_context_t ctx = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+
+	for (int i = 0; i < 300 && rootvnode == NULLVP; i++) {
+		lav_wait(100);
+	}
+	if (rootvnode == NULLVP) {
+		return;
+	}
+	lav_wait(1000);
+	for (int i = 0; i < 150; i++) {
+		if (vnode_lookup("/usr/share", 0, &vp, ctx) == 0 && vp != NULLVP) {
+			vnode_put(vp);
+			return;
+		}
+		lav_wait(200);
+	}
+}
+
+static void
+lav_install_from_ramdisk(void)
+{
+	uint64_t base = 0, size = 0, off = 8;
+	const uint8_t *p;
+	vfs_context_t ctx = vfs_context_kernel();
+	uint32_t ndirs = 0, nfiles = 0, errors = 0;
+
+	if (mdevgetrange(0, &base, &size) != 0 || base == 0 || size < 16) {
+		printf("LAVINSTALL: no md0 ramdisk\n");
+		return;
+	}
+	p = (const uint8_t *)(uintptr_t)base;
+	if (memcmp(p, "LAVINST1", 8) != 0) {
+		printf("LAVINSTALL: md0 does not hold a LAVINST1 archive\n");
+		return;
+	}
+	printf("LAVINSTALL: unpacking LAVINST1 archive (%llu bytes) onto root\n",
+	    (unsigned long long)size);
+	while (off + 16 <= size) {
+		uint32_t kind = 0, mode = 0;
+		uint64_t dlen = 0;
+		char path[256];
+		vnode_t vp = NULLVP;
+		struct vnode_attr va;
+		int err;
+
+		memcpy(&kind, p + off, sizeof(kind));
+		memcpy(&mode, p + off + 4, sizeof(mode));
+		memcpy(&dlen, p + off + 8, sizeof(dlen));
+		if (kind == 0) {
+			break;
+		}
+		if (off + 272 > size || dlen > size - (off + 272)) {
+			printf("LAVINSTALL: truncated record at 0x%llx\n", (unsigned long long)off);
+			errors++;
+			break;
+		}
+		memcpy(path, p + off + 16, sizeof(path));
+		path[sizeof(path) - 1] = '\0';
+
+		if (kind == 1) {
+			err = lav_kern_mkdir(path, (mode_t)(mode & 07777));
+			if (err != 0 && err != EEXIST) {
+				printf("LAVINSTALL: mkdir %s failed: %d\n", path, err);
+				errors++;
+			} else {
+				if (vnode_lookup(path, 0, &vp, ctx) == 0 && vp != NULLVP) {
+					VATTR_INIT(&va);
+					VATTR_SET(&va, va_mode, (mode_t)(mode & 07777));
+					(void)vnode_setattr(vp, &va, ctx);
+					vnode_put(vp);
+				}
+				ndirs++;
+			}
+		} else if (kind == 2) {
+			const uint8_t *data = p + off + 272;
+			uint64_t written = 0;
+
+			err = vnode_open(path, O_CREAT | O_TRUNC | FWRITE,
+			    (int)(mode & 07777), 0, &vp, ctx);
+			if (err != 0) {
+				printf("LAVINSTALL: open %s failed: %d\n", path, err);
+				errors++;
+			} else {
+				while (written < dlen) {
+					uint32_t chunk = (dlen - written > 65536u) ? 65536u : (uint32_t)(dlen - written);
+					int resid = 0;
+
+					err = vn_rdwr(UIO_WRITE, vp,
+					    (caddr_t)(uintptr_t)(data + written), (int)chunk,
+					    (off_t)written, UIO_SYSSPACE, 0,
+					    vfs_context_ucred(ctx), &resid,
+					    vfs_context_proc(ctx));
+					if (err != 0 || resid >= (int)chunk) {
+						printf("LAVINSTALL: write %s at %llu failed: %d (resid %d)\n",
+						    path, (unsigned long long)written, err, resid);
+						errors++;
+						break;
+					}
+					written += chunk - (uint32_t)resid;
+				}
+				VATTR_INIT(&va);
+				VATTR_SET(&va, va_mode, (mode_t)(mode & 07777));
+				(void)vnode_setattr(vp, &va, ctx);
+				(void)vnode_close(vp, FWRITE, ctx);
+				if (written == dlen) {
+					printf("LAVINSTALL: wrote %s (%llu bytes)\n",
+					    path, (unsigned long long)dlen);
+					nfiles++;
+				}
+			}
+		} else {
+			printf("LAVINSTALL: bad record kind %u at 0x%llx\n",
+			    kind, (unsigned long long)off);
+			errors++;
+			break;
+		}
+		off += 272ull + ((dlen + 15ull) & ~15ull);
+	}
+	(void)sync_internal();
+	printf("LAVINSTALL: done (%u dirs, %u files, %u errors)\n", ndirs, nfiles, errors);
+}
+
 static void
 lavender_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 {
-	uint32_t step = 0, delay_s = 25;
+	uint32_t step = 0, delay_s = 25, install = 0;
+	int has_delay;
 
 	(void)PE_parse_boot_argn("lavgpu", &step, sizeof(step));
-	(void)PE_parse_boot_argn("lavgpudelay", &delay_s, sizeof(delay_s));
+	(void)PE_parse_boot_argn("lavinstall", &install, sizeof(install));
+	has_delay = PE_parse_boot_argn("lavgpudelay", &delay_s, sizeof(delay_s));
+	if (step >= 30 || install != 0) {
+		lav_fast_boot = 1;
+		if (!has_delay) {
+			delay_s = 0;
+		}
+	}
 	if (delay_s > 300) {
 		delay_s = 300;
 	}
-	printf("LAVGPU: ladder up to step %u in %u s\n", step, delay_s);
-	lav_wait(delay_s * 1000);
+	printf("LAVGPU: ladder up to step %u in %u s (fast=%d install=%u)\n",
+	    step, delay_s, lav_fast_boot, install);
+	if (delay_s > 0) {
+		lav_wait(delay_s * 1000);
+	} else {
+		lav_wait_root();
+	}
+	if (install != 0) {
+		lav_install_from_ramdisk();
+	}
+	if (step == 0) {
+		return;
+	}
 
 	gcc = ml_io_map(GCC_PA, GCC_SIZE);
 	gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);
@@ -2933,11 +3100,12 @@ int
 lavender_gpu_probe(void)
 {
 	static int started;
-	uint32_t step = 0;
+	uint32_t step = 0, install = 0;
 	thread_t thread;
 
-	if (started || !PE_parse_boot_argn("lavgpu", &step, sizeof(step)) ||
-	    step == 0) {
+	(void)PE_parse_boot_argn("lavgpu", &step, sizeof(step));
+	(void)PE_parse_boot_argn("lavinstall", &install, sizeof(install));
+	if (started || (step == 0 && install == 0)) {
 		return 0;
 	}
 	started = 1;

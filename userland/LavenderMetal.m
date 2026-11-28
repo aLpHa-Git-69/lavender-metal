@@ -82,12 +82,15 @@ lavlog(const char * fmt, ...)
 /* The service: LavenderGPU (kernel/LavenderGPU.cpp). Buffers, and streams of PM4 words submitted by reference.         */
 /* ------------------------------------------------------------------------------------------------------------------ */
 
-enum { kLavInfo = 0, kLavBufNew = 1, kLavBufFree = 2, kLavSubmit = 3, kLavSubmitBuf = 4, kLavMetal = 5 };
+enum { kLavInfo = 0, kLavBufNew = 1, kLavBufFree = 2, kLavSubmit = 3, kLavSubmitBuf = 4, kLavMetal = 5,
+       kLavSurfaceInfo = 6, kLavSurfaceSync = 7 };
 
 struct lav_buf_new { uint64_t size; uint32_t handle, pad; uint64_t address; };
 struct lav_buf_free { uint32_t handle, pad; };
 struct lav_submit_out { uint32_t fence, status; };
 struct lav_submit_buf { uint32_t handle, offset, dwords, pad; };
+struct lav_surface_info { uint32_t surface_id, pad; uint64_t address; uint32_t size, bytes_per_row; };
+struct lav_surface_sync { uint32_t surface_id, op; };
 
 struct lbuf {
 	uint32_t handle;
@@ -298,6 +301,36 @@ lavOpen(void)
 		lavlog("the GPU service is open; stream buffer at GPU %#llx", (unsigned long long)gStream.gpu);
 	});
 	return gConn != 0 && gStream.handle != 0;
+}
+
+/* Query whether an IOSurface is physically contiguous below 4 GiB for zero-copy GPU rendering. */
+static BOOL
+lavSurfaceInfo(uint32_t surfaceId, struct lav_surface_info * out)
+{
+	struct lav_surface_info req;
+	size_t outSize = sizeof(*out);
+	kern_return_t kr;
+
+	memset(out, 0, sizeof(*out));
+	if (gConn == 0 || surfaceId == 0) {
+		return NO;
+	}
+	memset(&req, 0, sizeof(req));
+	req.surface_id = surfaceId;
+	kr = IOConnectCallStructMethod(gConn, kLavSurfaceInfo, &req, sizeof(req), out, &outSize);
+	return kr == KERN_SUCCESS && out->address != 0;
+}
+
+/* Cache maintenance on a zero-copy IOSurface: op 0 = clean (CPU->GPU), 1 = flush+inv (GPU->CPU). */
+static void
+lavSurfaceSync(uint32_t surfaceId, uint32_t op)
+{
+	struct lav_surface_sync req = { surfaceId, op };
+
+	if (gConn == 0 || surfaceId == 0) {
+		return;
+	}
+	IOConnectCallStructMethod(gConn, kLavSurfaceSync, &req, sizeof(req), NULL, NULL);
 }
 
 /* One synchronous submission: the words go into the stream buffer and the service reads them from there. */
